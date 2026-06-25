@@ -1,11 +1,14 @@
 """
-Conversational Spanish bot with pronunciation feedback.
+Conversational Spanish bot client.
 
-You have a natural conversation in Spanish. The bot replies in Spanish (voice + text).
-Pronunciation notes appear as a text side-channel — the bot doesn't interrupt the flow.
+Audio flows:
+  1. Mic → Transcribe Streaming (real-time STT, client-side)
+  2. Recorded WAV → presigned S3 URL (upload)
+  3. POST /converse (backend does SageMaker + Bedrock + KB + Polly)
+  4. Response audio URL → download and play
 
 Usage:
-    pip install amazon-transcribe pyaudio boto3 pydub simpleaudio
+    pip install amazon-transcribe pyaudio boto3 requests
     python converse_client.py
 """
 
@@ -18,6 +21,7 @@ import wave
 
 import boto3
 import pyaudio
+import requests
 from amazon_transcribe.client import TranscribeStreamingClient
 from amazon_transcribe.handlers import TranscriptResultStreamHandler
 from amazon_transcribe.model import TranscriptEvent
@@ -27,10 +31,6 @@ CHANNELS = 1
 CHUNK = 1024
 FORMAT = pyaudio.paInt16
 REGION = "us-west-2"
-
-PROMPT_PATH = os.path.join(os.path.dirname(__file__), "prompts", "system.txt")
-with open(PROMPT_PATH) as f:
-    SYSTEM_PROMPT = f.read()
 
 
 class TranscriptHandler(TranscriptResultStreamHandler):
@@ -51,12 +51,12 @@ def get_stack_outputs():
     return {o["OutputKey"]: o["OutputValue"] for o in resp["Stacks"][0]["Outputs"]}
 
 
-def play_audio_b64(audio_b64):
-    """Play base64 mp3 via macOS afplay (no extra deps)."""
+def play_audio_url(url):
     import subprocess
     import tempfile
+    data = requests.get(url).content
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-        f.write(base64.b64decode(audio_b64))
+        f.write(data)
         f.flush()
         subprocess.run(["afplay", f.name])
 
@@ -118,7 +118,7 @@ async def record_and_transcribe():
         wf.setframerate(RATE)
         wf.writeframes(b"".join(frames))
 
-    return handler.transcript.strip(), base64.b64encode(buf.getvalue()).decode()
+    return handler.transcript.strip(), buf.getvalue()
 
 
 async def main():
@@ -129,16 +129,12 @@ async def main():
     print("Say 'salir' or Ctrl+C to quit.\n")
 
     outputs = get_stack_outputs()
-    endpoint_name = outputs["EndpointName"]
-
-    sagemaker = boto3.client("sagemaker-runtime", region_name=REGION)
-    bedrock = boto3.client("bedrock-runtime", region_name=REGION)
-    polly_client = boto3.client("polly", region_name=REGION)
+    api_url = outputs["ApiUrl"]
 
     history = []
 
     while True:
-        text, audio_b64 = await record_and_transcribe()
+        text, audio_wav = await record_and_transcribe()
         if not text:
             print("  (no speech detected)")
             continue
@@ -147,61 +143,45 @@ async def main():
 
         print(f"  Tú: {text}")
 
-        # 1. Phonemes from SageMaker
-        sm_resp = sagemaker.invoke_endpoint(
-            EndpointName=endpoint_name, ContentType="application/json",
-            Body=json.dumps({"audio_b64": audio_b64, "text": text}),
-        )
-        phonemes = json.loads(sm_resp["Body"].read())
-        actual = phonemes.get("actual_phonemes", [])
-        expected = phonemes.get("expected_phonemes", [])
+        # 1. Get presigned upload URL
+        resp = requests.get(f"{api_url}/upload-url")
+        upload_info = resp.json()
 
-        # 2. Conversational reply from Bedrock
-        user_msg = f'[The learner said: "{text}"]\n[Expected phonemes: {expected}]\n[Actual phonemes: {actual}]'
-        history.append({"role": "user", "content": user_msg})
+        # 2. Upload audio to S3
+        requests.put(upload_info["upload_url"], data=audio_wav,
+                    headers={"Content-Type": "audio/wav"})
 
-        br_resp = bedrock.invoke_model(
-            modelId="us.anthropic.claude-haiku-4-5-20251001-v1:0",
-            contentType="application/json", accept="application/json",
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 300,
-                "system": SYSTEM_PROMPT,
-                "messages": history,
-            }),
-        )
-        llm_text = json.loads(br_resp["body"].read())["content"][0]["text"]
-        # Parse XML tags from response
-        import re
-        reply = re.search(r'<reply>(.*?)</reply>', llm_text, re.DOTALL)
-        note = re.search(r'<pronunciation_note>(.*?)</pronunciation_note>', llm_text, re.DOTALL)
-        grammar = re.search(r'<grammar_note>(.*?)</grammar_note>', llm_text, re.DOTALL)
-        llm_output = {
-            "reply": reply.group(1).strip() if reply else llm_text,
-            "pronunciation_note": note.group(1).strip() if note and note.group(1).strip() else None,
-            "grammar_note": grammar.group(1).strip() if grammar and grammar.group(1).strip() else None,
-        }
+        # 3. Call /converse
+        resp = requests.post(f"{api_url}/converse", json={
+            "text": text,
+            "audio_key": upload_info["key"],
+            "history": history,
+        })
+        if resp.status_code != 200:
+            print(f"  ❌ Server error ({resp.status_code}): {resp.text}")
+            continue
+        result = resp.json()
 
-        reply = llm_output["reply"]
-        history.append({"role": "assistant", "content": json.dumps(llm_output)})
+        if "error" in result:
+            print(f"  ❌ {result['error']}")
+            continue
 
-        # Keep history bounded
+        reply = result.get("reply", "")
+        print(f"  Bot: {reply}")
+        if result.get("pronunciation_note"):
+            print(f"  📝 {result['pronunciation_note']}")
+        if result.get("grammar_note"):
+            print(f"  ✏️  {result['grammar_note']}")
+
+        # 4. Play response audio
+        if result.get("reply_audio_url"):
+            play_audio_url(result["reply_audio_url"])
+
+        # Maintain history
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": reply})
         if len(history) > 20:
             history = history[-20:]
-
-        # 3. Speak reply in Spanish
-        polly_resp = polly_client.synthesize_speech(
-            Text=reply, OutputFormat="mp3", VoiceId="Lupe", Engine="neural", LanguageCode="es-US"
-        )
-        reply_audio = base64.b64encode(polly_resp["AudioStream"].read()).decode()
-
-        print(f"  Bot: {reply}")
-        if llm_output.get("pronunciation_note"):
-            print(f"  📝 {llm_output['pronunciation_note']}")
-        if llm_output.get("grammar_note"):
-            print(f"  ✏️  {llm_output['grammar_note']}")
-
-        play_audio_b64(reply_audio)
 
 
 if __name__ == "__main__":

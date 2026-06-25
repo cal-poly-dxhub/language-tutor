@@ -19,3 +19,8 @@ cdk.out/
 
 # Environment
 .env
+
+# test data
+data/
+
+
