@@ -1,43 +1,86 @@
-# Pronunciation Checker
+# Foreign Language Tutor
 
-Spanish conversational bot with pronunciation feedback. Uses SageMaker (Wav2Vec2 phonemes), Bedrock Claude Haiku 4.5 (LLM evaluation), and Polly Neural (spoken responses).
+Conversational Spanish tutor with pronunciation/grammar feedback and RAG-powered course material access.
 
 ## Architecture
 
 ```
-Client (mic) → Transcribe Streaming (speech-to-text)
-             → SageMaker Wav2Vec2 (phoneme extraction)
-             → Bedrock Claude Haiku 4.5 (dialect-aware evaluation)
-             → Polly Neural TTS (spoken feedback)
-             → Client (speaker)
+Client (mic) → Transcribe Streaming (real-time STT)
+             → S3 (audio upload via presigned URL)
+             → HTTP API POST /converse
+               → Lambda:
+                 → SageMaker Wav2Vec2 (phoneme extraction)
+                 → Bedrock Claude Haiku 4.5 (conversation + evaluation)
+                   → tool_use → Bedrock KB retrieve (course materials)
+                 → Polly Neural TTS (spoken response → S3)
+             → Client (downloads + plays response audio)
 ```
-
-The bot has a natural Spanish conversation with you. Pronunciation feedback appears as text annotations — the spoken reply stays conversational. The LLM understands regional variants (seseo, yeísmo, rioplatense) and only flags errors that impede comprehension.
 
 ## Deploy
 
 ```bash
 pip install -r requirements.txt
-npx cdk bootstrap   # first time only
-npx cdk deploy
+CDK_DOCKER=finch npx cdk deploy
 ```
 
-## Conversational Client
+### Post-deploy: Create Knowledge Base
+
+1. Open Bedrock console → Knowledge Bases → Create
+2. Name: `tutor-materials`, Quick Create, Titan Embeddings V2
+3. S3 data source → use the `MaterialsBucketName` from stack outputs
+4. Copy the KB ID, then run:
 
 ```bash
-pip install amazon-transcribe pyaudio boto3 pydub simpleaudio
-python converse_client.py
+python3 setup_kb.py <KB_ID>
 ```
 
-You speak Spanish naturally. The bot replies in Spanish (audio + text). Pronunciation notes appear below as text.
+### Canvas LMS Setup (optional)
+
+Store Canvas API credentials in Secrets Manager:
+```bash
+aws secretsmanager put-secret-value --secret-id tutor/canvas-api-token \
+  --secret-string '{"base_url":"https://your-school.instructure.com","token":"...","course_id":"12345"}'
+```
+
+Materials sync runs every 6 hours automatically, or force sync:
+```bash
+curl -X POST <SyncUrl>
+```
+
+## Client
+
+```bash
+pip install amazon-transcribe pyaudio boto3 requests
+python3 converse_client.py
+```
+
+Speak Spanish → bot responds in Spanish (audio + text). Ask about class materials in English → bot searches KB and answers in English.
+
+## API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /upload-url` | Presigned S3 URL for audio upload |
+| `POST /converse` | `{"text": "...", "audio_key": "...", "history": [...]}` → response + audio URL |
+| `POST /sync` | Force Canvas → S3 → KB sync |
 
 ## System Prompt
 
-The bot's personality and evaluation behavior is in `prompts/system.txt`. Edit it to change how strict/lenient the evaluation is, or to change the conversation style.
+Edit `prompts/system.txt` to change bot personality, evaluation strictness, or dialect tolerance.
 
-## Cost
+## Project Structure
 
-- SageMaker ml.g4dn.xlarge: ~$0.74/hr
-- Bedrock Claude Haiku 4.5: ~$0.80/1M input, $4/1M output tokens
-- Polly Neural: $16/1M characters
-- Transcribe Streaming: $0.024/min
+```
+app.py                  # CDK entry point
+cdk/stack.py            # Infrastructure
+lambda/
+  handler.py            # Conversation handler (SageMaker + Bedrock + KB + Polly)
+  sync.py               # Canvas sync handler
+container/
+  serve.py              # SageMaker Wav2Vec2 container
+  Dockerfile
+prompts/system.txt      # System prompt
+converse_client.py      # CLI client
+setup_kb.py             # Post-deploy KB wiring
+requirements.txt
+```
