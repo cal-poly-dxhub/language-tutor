@@ -112,7 +112,7 @@ class PronunciationCheckerStack(Stack):
             actions=["sagemaker:InvokeEndpoint", "sagemaker:InvokeEndpointWithResponseStream"],
             resources=[f"arn:aws:sagemaker:{self.region}:{self.account}:endpoint/{endpoint.attr_endpoint_name}"]))
         lambda_role.add_to_policy(iam.PolicyStatement(
-            actions=["bedrock:InvokeModel"],
+            actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
             resources=[
                 "arn:aws:bedrock:*::foundation-model/anthropic.*",
                 f"arn:aws:bedrock:*:{self.account}:inference-profile/us.anthropic.*",
@@ -157,7 +157,62 @@ class PronunciationCheckerStack(Stack):
             principal=iam.ServicePrincipal("apigateway.amazonaws.com"),
             source_arn=f"arn:aws:execute-api:{self.region}:{self.account}:{http_api.ref}/*")
 
+        # --- Streaming conversation path (WebSocket) ---
+        # Scalable, web-ready alternative to POST /converse. HTTP API + Lambda proxy
+        # buffers responses and cannot stream; a WebSocket API lets the backend push
+        # reply-text deltas and per-sentence audio as they are produced. Fully
+        # serverless: API Gateway manages connections, Lambda fans one "converse"
+        # message out into many pushed messages via ApiGatewayManagementApi.
+        stream_handler = _lambda.Function(self, "StreamHandler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="stream_handler.lambda_handler",
+            code=_lambda.Code.from_asset(os.path.join(os.path.dirname(__file__), "..", "lambda")),
+            role=lambda_role,
+            timeout=Duration.seconds(120),
+            memory_size=1024,
+            environment={
+                "SAGEMAKER_ENDPOINT": endpoint.attr_endpoint_name,
+                "SYSTEM_PROMPT": system_prompt,
+                "KNOWLEDGE_BASE_ID": "SET_VIA_SETUP_KB",
+                "MATERIALS_BUCKET": materials_bucket.bucket_name,
+            })
+
+        ws_api = apigwv2.CfnApi(self, "StreamApi",
+            name="TutorStreamApi", protocol_type="WEBSOCKET",
+            route_selection_expression="$request.body.action")
+
+        ws_integration_uri = (
+            f"arn:aws:apigateway:{self.region}:lambda:path/2015-03-31/functions/"
+            f"{stream_handler.function_arn}/invocations")
+        ws_integration = apigwv2.CfnIntegration(self, "StreamIntegration",
+            api_id=ws_api.ref, integration_type="AWS_PROXY",
+            integration_method="POST", integration_uri=ws_integration_uri)
+
+        for route_id, route_key in [
+            ("StreamConnectRoute", "$connect"),
+            ("StreamDisconnectRoute", "$disconnect"),
+            ("StreamConverseRoute", "converse"),
+            ("StreamDefaultRoute", "$default"),
+        ]:
+            apigwv2.CfnRoute(self, route_id,
+                api_id=ws_api.ref, route_key=route_key,
+                target=f"integrations/{ws_integration.ref}")
+
+        ws_stage = apigwv2.CfnStage(self, "StreamStage",
+            api_id=ws_api.ref, stage_name="prod", auto_deploy=True)
+
+        stream_handler.add_permission("WsApiInvoke",
+            principal=iam.ServicePrincipal("apigateway.amazonaws.com"),
+            source_arn=f"arn:aws:execute-api:{self.region}:{self.account}:{ws_api.ref}/*")
+
+        # Allow the Lambda to push messages back over the WebSocket connection.
+        lambda_role.add_to_policy(iam.PolicyStatement(
+            actions=["execute-api:ManageConnections"],
+            resources=[f"arn:aws:execute-api:{self.region}:{self.account}:{ws_api.ref}/*"]))
+
         # --- Outputs ---
+        CfnOutput(self, "WsUrl",
+            value=f"wss://{ws_api.ref}.execute-api.{self.region}.amazonaws.com/{ws_stage.stage_name}")
         CfnOutput(self, "ApiUrl",
             value=f"https://{http_api.ref}.execute-api.{self.region}.amazonaws.com")
         CfnOutput(self, "SyncUrl",

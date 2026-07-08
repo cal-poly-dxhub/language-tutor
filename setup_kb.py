@@ -39,9 +39,18 @@ def main():
     kb_id = sys.argv[1]
     lambda_client = boto3.client("lambda", region_name=REGION)
 
-    # Update both Lambdas with the KB ID
-    for fn_prefix in ["PronunciationCheckerStack-PronunciationHandler", "PronunciationCheckerStack-CanvasSyncHandler"]:
-        functions = lambda_client.list_functions()["Functions"]
+    # Update all Lambdas that use the KB with the KB ID.
+    prefixes = [
+        "PronunciationCheckerStack-PronunciationHandler",
+        "PronunciationCheckerStack-StreamHandler",
+        "PronunciationCheckerStack-CanvasSyncHandler",
+    ]
+    functions = []
+    paginator = lambda_client.get_paginator("list_functions")
+    for page in paginator.paginate():
+        functions.extend(page["Functions"])
+
+    for fn_prefix in prefixes:
         for fn in functions:
             if fn["FunctionName"].startswith(fn_prefix):
                 config = lambda_client.get_function_configuration(FunctionName=fn["FunctionName"])
