@@ -16,6 +16,53 @@ Client (mic) → Transcribe Streaming (real-time STT)
              → Client (downloads + plays response audio)
 ```
 
+## Alternative Architecture: Nova Sonic (speech-to-speech)
+
+`NovaSonicTutorStack` (in `cdk/nova_sonic_stack.py`) is a second, independent stack that
+replaces the STT → LLM → TTS pipeline with a single Amazon Nova Sonic speech-to-speech
+model. Deploy it to compare against the pipeline above.
+
+```
+Browser (mic) ──ws──► ALB ──► Fargate bridge (nova_sonic_container/server.py)
+                                 │  InvokeModelWithBidirectionalStream (HTTP/2)
+                                 ▼
+                          Amazon Nova Sonic  ── STT + reasoning + TTS in ONE model
+                                 │             native turn-taking + barge-in
+                                 ├─ tool: search_materials → Bedrock KB retrieve
+                                 └─ tool: log_feedback → on-screen note (NOT spoken)
+                                 ▼
+Browser (speaker) ◄──ws── audio + transcript + feedback notes
+```
+
+Key differences vs. the pipeline:
+
+| | Pipeline (`PronunciationCheckerStack`) | Nova Sonic (`NovaSonicTutorStack`) |
+|---|---|---|
+| Speech | Transcribe + Polly (2 services) | one model does STT + TTS |
+| Turn-taking / barge-in | build it yourself | native |
+| Pronunciation feedback | phoneme-precise (Wav2Vec2) | qualitative only (no phoneme output) |
+| Compute | serverless Lambda | always-on Fargate (bidirectional stream can't run on Lambda) |
+| GPU endpoint | SageMaker `ml.g4dn.xlarge` 24/7 | none |
+
+The **"feedback without interrupting"** requirement is delivered by the `log_feedback`
+tool: instead of speaking corrections, the model calls the tool and the bridge forwards
+them to the client as text notes while the spoken conversation keeps flowing.
+
+Deploy just this stack:
+
+```bash
+pip install -r requirements.txt
+# Nova Sonic is region-limited; default region is us-east-1 (override with NOVA_SONIC_CDK_REGION)
+CDK_DOCKER=finch npx cdk deploy NovaSonicTutorStack
+python3 setup_kb.py <KB_ID>   # then set KNOWLEDGE_BASE_ID on the Fargate task + sync Lambda
+```
+
+> Note: the `WsUrl` output is `ws://` (no TLS). Browsers block mic access and `ws://`
+> from `https://` pages — put an ACM cert + HTTPS listener on the ALB for `wss://` in
+> production. The bridge uses the experimental `aws_sdk_bedrock_runtime` Python SDK
+> (see `nova_sonic_container/requirements.txt`); Nova Sonic also has an ~8 min
+> connection cap (renew/continue for longer sessions).
+
 ## Deploy
 
 ```bash

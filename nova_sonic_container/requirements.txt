@@ -1,0 +1,10 @@
+# Nova Sonic bidirectional streaming uses the experimental async SDK (documented at
+# https://docs.aws.amazon.com/nova/latest/userguide/speech-bidirection.html). Versions
+# match the aws-samples/amazon-nova-samples speech-to-speech console-python sample.
+aws_sdk_bedrock_runtime>=0.1.0,<0.2.0
+smithy-aws-core>=0.0.1
+rx>=3.2.0
+# KB retrieval + AWS plumbing
+boto3>=1.34.0
+# WebSocket + health-check server
+aiohttp>=3.9.0
