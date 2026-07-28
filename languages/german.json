@@ -1,0 +1,30 @@
+{
+  "_comment": "German profile. Voices for de-DE: tina (feminine), lennart (masculine).",
+  "code": "de",
+  "targetLanguage": "German",
+  "nativeLanguage": "English",
+  "_localeComment": "BCP-47 codes for Amazon Transcribe, which gives the coaching lane an independent transcript and identifies which language was actually spoken. Streaming identification needs at least two options, one dialect each.",
+  "locale": "de-DE",
+  "nativeLocale": "en-US",
+  "voiceId": "tina",
+  "_genderComment": "Must match the voice: gendered languages conjugate self-reference. Feminine voices: tiffany, amy, olivia, kiara, ambre, beatrice, tina, lupe, carolina. Masculine: matthew, arjun, florian, lorenzo, lennart, carlos, leo.",
+  "voiceGender": "female",
+  "clarifyPhrase": "Wie bitte? Ich habe dich nicht richtig verstanden",
+  "regionalVariation": [
+    "Austrian, Swiss and Bavarian vowel colouring",
+    "\"ch\" as a hard k sound in Swiss and Austrian speech",
+    "uvular versus alveolar \"r\", and \"r\" vocalised to an \"a\"-like sound at the end of a syllable",
+    "northern \"sp\" and \"st\" pronounced sp/st rather than shp/sht",
+    "the \"-ig\" ending as a k or a soft ch depending on region",
+    "regional vocabulary (Samstag/Sonnabend, Brötchen/Semmel/Schrippe)"
+  ],
+  "_learnerErrorsComment": "The other side of the coin from regionalVariation: mistakes learners genuinely make that must NOT be excused as accent. Without these the reviewer treats almost everything as dialect and stays silent.",
+  "learnerErrors": [
+    "replacing \"ü\" or \"ö\" with English \"oo\" or \"er\"",
+    "reading \"w\" as English \"w\" instead of a v sound",
+    "reading \"z\" as English \"z\" instead of ts",
+    "flattening long and short vowel distinctions that change the word (Staat / Stadt)"
+  ],
+  "pronunciationExample": "your \"ü\" in \"über\" came out like the English \"oo\", so it sounded closer to \"uber\"",
+  "grammarExample": "\"ich habe das Buch gelesen\" — the participle moves to the end of the clause"
+}

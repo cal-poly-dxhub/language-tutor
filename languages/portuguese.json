@@ -1,0 +1,30 @@
+{
+  "_comment": "Portuguese profile (pt-BR voices). Voices: carolina (feminine), leo (masculine).",
+  "code": "pt",
+  "targetLanguage": "Portuguese",
+  "nativeLanguage": "English",
+  "_localeComment": "BCP-47 codes for Amazon Transcribe, which gives the coaching lane an independent transcript and identifies which language was actually spoken. Streaming identification needs at least two options, one dialect each.",
+  "locale": "pt-BR",
+  "nativeLocale": "en-US",
+  "voiceId": "carolina",
+  "_genderComment": "Must match the voice: gendered languages conjugate self-reference. Feminine voices: tiffany, amy, olivia, kiara, ambre, beatrice, tina, lupe, carolina. Masculine: matthew, arjun, florian, lorenzo, lennart, carlos, leo.",
+  "voiceGender": "female",
+  "clarifyPhrase": "Como? Não te ouvi bem",
+  "regionalVariation": [
+    "Brazilian \"de\" and \"te\" as dji/tchi versus European d/t",
+    "carioca \"s\" as sh at the end of a syllable",
+    "European reduction of unstressed vowels, which clips syllables English speakers expect to hear",
+    "word-initial \"r\" as an h-like sound in Brazil and a trill in Portugal",
+    "você versus tu, and the different verb endings that follow each",
+    "regional vocabulary across Brazil, Portugal and the African varieties"
+  ],
+  "_learnerErrorsComment": "The other side of the coin from regionalVariation: mistakes learners genuinely make that must NOT be excused as accent. Without these the reviewer treats almost everything as dialect and stays silent.",
+  "learnerErrors": [
+    "replacing the nasal vowels of ão, ãe, õe with plain vowels",
+    "reducing unstressed vowels the way English does, past what the variety expects",
+    "reading initial \"r\" as an English r rather than an h-like sound or trill",
+    "reading \"lh\" and \"nh\" as plain l and n"
+  ],
+  "pronunciationExample": "your nasal \"ão\" in \"pão\" came out as a plain \"a\", so it sounded like \"pa\"",
+  "grammarExample": "\"eu fui ao mercado\" — ir takes \"a\" plus the article, which contracts to \"ao\""
+}

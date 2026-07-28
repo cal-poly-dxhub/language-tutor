@@ -1,0 +1,15 @@
+# Nova Sonic bidirectional streaming uses the experimental async SDK documented at
+# https://docs.aws.amazon.com/nova/latest/nova2-userguide/sonic-getting-started.html
+#
+# (`http_auth_scheme_resolver` -> `auth_scheme_resolver`). 0.1.1 exposes the names the
+# Nova 2 guide uses. smithy-aws-core is pinned to the version 0.1.1 resolves to so a
+# transitive bump can't silently change that API. Requires Python >= 3.12.
+aws-sdk-bedrock-runtime==0.1.1
+smithy-aws-core==0.1.1
+# Knowledge Base retrieval, SageMaker phoneme scoring, coach model invocation.
+boto3==1.40.47
+# NOTE: amazon-transcribe is deliberately NOT here. It pins awscrt ~=0.26.1 while
+# smithy-http[awscrt] above needs ~=0.28.2, and no released pair resolves — that conflict
+# is exactly why Transcribe runs in the asr_service sidecar and is reached over localhost.
+# WebSocket bridge + ALB health endpoint.
+aiohttp==3.13.2

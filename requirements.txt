@@ -1,2 +1,5 @@
+# CDK synth/deploy.
 aws-cdk-lib==2.200.0
 constructs>=10.0.0,<11.0.0
+# setup_kb.py and speech_client.py talk to AWS directly from your machine.
+boto3>=1.34.0

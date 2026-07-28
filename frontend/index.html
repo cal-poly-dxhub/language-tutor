@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<!--
+  Browser client for the Language Tutor.
+
+  Talk; the tutor talks back. Speech in, speech out, streamed — Nova Sonic handles
+  turn-taking and barge-in, so there is no push-to-talk and no Enter key. The right
+  pane fills in seconds later with pronunciation/grammar notes from the async coach,
+  which never interrupts the conversation.
+
+    index.html          this file: structure only
+    styles.css          presentation
+    app.js              WebSocket protocol, capture, playback, rendering
+    capture-worklet.js  audio-thread mic capture (PCM16 framing)
+
+  ./deploy.sh publishes this directory to S3 behind CloudFront, which also proxies /ws
+  to the bridge — so the page and the WebSocket share one origin and the client needs no
+  endpoint configuration. To run it locally instead:
+
+      python3 -m http.server 8000 --directory frontend
+      open http://localhost:8000
+
+  http://localhost is a secure context (so the mic works) and may still open a ws://
+  socket, which is why the local flow can talk to the plain-HTTP load balancer directly.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language Tutor — live Spanish practice</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Language&nbsp;Tutor</h1>
+  <label for="language">Language</label>
+  <select id="language" aria-label="Language to practise"></select>
+  <label for="token">Access token</label>
+  <input id="token" type="password" placeholder="from Secrets Manager" autocomplete="off">
+  <button id="go">Start talking</button>
+  <button id="end" class="secondary" disabled>End</button>
+  <details id="advanced">
+    <summary>Endpoint</summary>
+    <label for="url">Bridge WebSocket</label>
+    <input id="url" type="text" placeholder="wss://host/ws" autocomplete="off">
+    <button id="reset" class="secondary" type="button">Use this page's origin</button>
+  </details>
+  <p id="status" role="status" aria-live="polite"><span class="dot" id="dot"></span><span id="statusText">Idle</span></p>
+</header>
+
+<main>
+  <section aria-labelledby="convHead">
+    <div class="pane-head" id="convHead">Conversation</div>
+    <div class="scroll" id="log" aria-live="polite" aria-atomic="false">
+      <p class="empty">Press <strong>Start talking</strong> and just speak Spanish. The tutor
+        replies out loud, waits when you pause, and lets you talk over it.</p>
+    </div>
+    <p class="hint">Headphones recommended — without them the mic hears the tutor and may
+      interrupt it.</p>
+  </section>
+
+  <section aria-labelledby="coachHead">
+    <div class="pane-head" id="coachHead">Coach notes</div>
+    <div class="scroll" id="notes" aria-live="polite" aria-atomic="false">
+      <p class="empty">Pronunciation and grammar notes appear here a few seconds after you
+        finish a sentence. Nothing here means nothing needed fixing.</p>
+    </div>
+  </section>
+</main>
+
+<script src="app.js" defer></script>
+</body>
+</html>

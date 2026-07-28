@@ -1,0 +1,30 @@
+{
+  "_comment": "Second profile, included to keep the templates honest: nothing outside this file had to change to support another language. Deploy with -c language=french.",
+  "code": "fr",
+  "targetLanguage": "French",
+  "nativeLanguage": "English",
+  "_localeComment": "BCP-47 codes for Amazon Transcribe, which gives the coaching lane an independent transcript and identifies which language was actually spoken. Streaming identification needs at least two options, one dialect each.",
+  "locale": "fr-FR",
+  "nativeLocale": "en-US",
+  "_voiceComment": "Voices for fr-FR: ambre (feminine), florian (masculine).",
+  "voiceId": "ambre",
+  "_genderComment": "Must match the voice: gendered languages conjugate self-reference. Feminine voices: tiffany, amy, olivia, kiara, ambre, beatrice, tina, lupe, carolina. Masculine: matthew, arjun, florian, lorenzo, lennart, carlos, leo.",
+  "voiceGender": "female",
+  "clarifyPhrase": "Pardon ? Je n'ai pas bien entendu",
+  "regionalVariation": [
+    "Québécois vowel shifts and diphthongisation (\"moi\" closer to \"moé\")",
+    "uvular versus alveolar \"r\"",
+    "dropped \"ne\" in negation, which is normal in speech",
+    "elided vowels and dropped final consonants in casual speech",
+    "Belgian and Swiss number words (septante, nonante)"
+  ],
+  "_learnerErrorsComment": "The other side of the coin from regionalVariation: mistakes learners genuinely make that must NOT be excused as accent. Without these the reviewer treats almost everything as dialect and stays silent.",
+  "learnerErrors": [
+    "pronouncing final consonants that should be silent (parlent, beaucoup)",
+    "replacing the front rounded \"u\" with an English \"oo\"",
+    "voicing the \"h\" in words like \"homme\", where it is silent",
+    "missing the nasal vowels in an, on, in — saying them as vowel plus n"
+  ],
+  "pronunciationExample": "your \"u\" in \"tu\" came out like the \"ou\" in \"tout\", so it sounded like a different word",
+  "grammarExample": "\"je suis allé\" — aller takes être in the passé composé, not avoir"
+}

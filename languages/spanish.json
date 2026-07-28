@@ -1,0 +1,33 @@
+{
+  "_comment": "All language-specific content lives in files like this one. bridge/coach.py, bridge/server.py and the prompt templates contain no words from any language. To add a language: copy this file, translate the content, then deploy with -c language=<filename without .json>.",
+  "code": "es",
+  "targetLanguage": "Spanish",
+  "nativeLanguage": "English",
+  "_localeComment": "BCP-47 codes for Amazon Transcribe, which gives the coaching lane an independent transcript and identifies which language was actually spoken. Streaming identification needs at least two options, one dialect each.",
+  "locale": "es-US",
+  "nativeLocale": "en-US",
+  "_voiceComment": "Voices for es-US: lupe (feminine), carlos (masculine). tiffany and matthew are polyglot and also speak Spanish.",
+  "voiceId": "lupe",
+  "_genderComment": "Must match the voice: gendered languages conjugate self-reference. Feminine voices: tiffany, amy, olivia, kiara, ambre, beatrice, tina, lupe, carolina. Masculine: matthew, arjun, florian, lorenzo, lennart, carlos, leo.",
+  "voiceGender": "female",
+  "clarifyPhrase": "¿Cómo? No te escuché bien",
+  "_regionalComment": "Accent features the coach must never flag as errors. Getting this list right per language is what stops the tutor 'correcting' a native-sounding regional accent.",
+  "regionalVariation": [
+    "\"ll\" or \"y\" pronounced as sh, zh, j, y or a palatal l (rioplatense and others) — all of these are correct, a plain English l is not",
+    "\"c\" or \"z\" as s instead of th (all of Latin America)",
+    "aspirated or dropped \"s\" (Caribbean, Andalusian)",
+    "softened or dropped final consonants",
+    "regional vocabulary and voseo"
+  ],
+  "_learnerErrorsComment": "The other side of the coin from regionalVariation: mistakes learners genuinely make that must NOT be excused as accent. Without these the reviewer treats almost everything as dialect and stays silent.",
+  "learnerErrors": [
+    "pronouncing the silent \"h\" (hola, hombre) — it is always silent, and voicing it is an error rather than an accent",
+    "reading \"ll\" as an English plain \"l\" (tortilla as \"tortila\") — \"ll\" is a y-like sound, or a palatal l in some regions, but never a plain l",
+    "using English vowel qualities instead of the five pure vowels, or reducing unstressed vowels to a schwa",
+    "reading \"j\" or \"g\" before e/i as an English \"j\" instead of a throaty h",
+    "stressing the wrong syllable when it changes the word (esta / está, papa / papá)"
+  ],
+  "_exampleComment": "Shows the coach the house style for a note: plain language, no phonetic symbols, give the fix.",
+  "pronunciationExample": "your 'rr' in 'perro' came out as a single tap, so it sounded like 'pero' (but)",
+  "grammarExample": "'yo comí' — for 'I ate' the -í ending already carries the yo"
+}

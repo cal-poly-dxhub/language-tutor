@@ -68,6 +68,29 @@ def phonemize_text(text: str) -> list[str]:
     return [p for p in result.replace("|", "").split() if p]
 
 
+def phonemize_words(text: str) -> list[dict]:
+    """
+    Expected phonemes grouped by word, e.g. [{"word": "comer", "phonemes": ["k","o",...]}].
+
+    The word boundary is the point. Without it the consumer gets one flat phoneme list and
+    has to guess which word a difference belongs to — which is how a note ended up telling
+    a learner about "the LL in discriminatorio", a word containing no LL. espeak already
+    emits the boundary as "|"; this keeps it instead of stripping it.
+    """
+    result = espeak_backend.phonemize([text], separator=phoneme_separator)[0]
+    words = [w for w in text.split() if w]
+    groups = [g.strip() for g in result.split("|")]
+    groups = [g for g in groups if g]
+    out = []
+    for index, group in enumerate(groups):
+        phonemes = [p for p in group.split() if p]
+        if not phonemes:
+            continue
+        out.append({"word": words[index] if index < len(words) else "",
+                    "phonemes": phonemes})
+    return out
+
+
 # --- HTTP server for SageMaker health checks and single-shot ---
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -104,6 +127,7 @@ class SageMakerHandler(BaseHTTPRequestHandler):
                 result = json.dumps({
                     "actual_phonemes": actual,
                     "expected_phonemes": expected,
+                    "expected_words": phonemize_words(data["text"]),
                     "score": {"accuracy": round(accuracy, 1), "distance": distance, "errors": errors},
                 })
                 self.send_response(200)
@@ -174,6 +198,7 @@ async def handle_stream(websocket):
         await websocket.send(json.dumps({
             "detected_text": detected_text,
             "expected_phonemes": expected,
+            "expected_words": phonemize_words(detected_text),
             "actual_phonemes": actual,
             "score": {"accuracy": round(accuracy, 1), "distance": distance, "errors": errors},
         }))

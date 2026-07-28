@@ -1,0 +1,31 @@
+{
+  "_comment": "English profile, for learners practising English. Voices: en-US tiffany/matthew, en-GB amy, en-AU olivia, en-IN kiara/arjun. tiffany and matthew are the polyglot voices and can speak every language Nova 2 Sonic supports.",
+  "_nativeLanguageNote": "Target and native language are both English here, which makes the 'switched to their own language' part of the conversation prompt a no-op — harmless, but if you know your learners' first language, set nativeLanguage to it so coach notes are written in a language they read comfortably.",
+  "code": "en",
+  "targetLanguage": "English",
+  "nativeLanguage": "English",
+  "_localeComment": "BCP-47 codes for Amazon Transcribe, which gives the coaching lane an independent transcript and identifies which language was actually spoken. Streaming identification needs at least two options, one dialect each.",
+  "locale": "en-US",
+  "nativeLocale": "es-US",
+  "voiceId": "tiffany",
+  "_genderComment": "Must match the voice: gendered languages conjugate self-reference. Feminine voices: tiffany, amy, olivia, kiara, ambre, beatrice, tina, lupe, carolina. Masculine: matthew, arjun, florian, lorenzo, lennart, carlos, leo.",
+  "voiceGender": "female",
+  "clarifyPhrase": "Sorry? I didn't catch that",
+  "regionalVariation": [
+    "rhotic and non-rhotic \"r\" (American and Irish versus most British, Australian and New Zealand speech)",
+    "\"t\" as a glottal stop or as a tap between vowels (\"butter\" toward \"budder\")",
+    "the trap/bath and cot/caught vowel splits, which differ by region",
+    "\"th\" as f, v or d in some varieties",
+    "dropped \"h\" at the start of words",
+    "regional vocabulary and spelling conventions across all varieties"
+  ],
+  "_learnerErrorsComment": "The other side of the coin from regionalVariation: mistakes learners genuinely make that must NOT be excused as accent. Without these the reviewer treats almost everything as dialect and stays silent.",
+  "learnerErrors": [
+    "replacing \"th\" with f, d, s or t so words merge (three / free, this / dis)",
+    "dropping or adding syllables in consonant clusters (strength, sixths)",
+    "confusing short and long vowel pairs that change the word (ship / sheep, full / fool)",
+    "stressing the wrong syllable so the word becomes hard to place"
+  ],
+  "pronunciationExample": "your \"th\" in \"three\" came out as \"f\", so it sounded like \"free\"",
+  "grammarExample": "\"I have lived here for two years\" — the present perfect covers a stretch of time running up to now"
+}

@@ -1,0 +1,4 @@
+# Test dependencies. The bridge modules under test import the experimental Nova Sonic
+# SDK, so this pulls in the same pins as bridge/requirements.txt. Requires Python >= 3.12.
+-r bridge/requirements.txt
+pytest==8.4.2
