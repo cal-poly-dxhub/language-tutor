@@ -6,6 +6,8 @@
   "_localeComment": "BCP-47 codes for Amazon Transcribe, which gives the coaching lane an independent transcript and identifies which language was actually spoken. Streaming identification needs at least two options, one dialect each.",
   "locale": "de-DE",
   "nativeLocale": "en-US",
+  "_espeakComment": "espeak-ng voice used to phonemise the transcript into EXPECTED phonemes. It must match the language being taught: phonemising English text with the Spanish voice turns \"Hello\" into \"e ʎ o\", which makes the comparison against what Wav2Vec2 actually heard meaningless.",
+  "espeakLanguage": "de",
   "voiceId": "tina",
   "_genderComment": "Must match the voice: gendered languages conjugate self-reference. Feminine voices: tiffany, amy, olivia, kiara, ambre, beatrice, tina, lupe, carolina. Masculine: matthew, arjun, florian, lorenzo, lennart, carlos, leo.",
   "voiceGender": "female",

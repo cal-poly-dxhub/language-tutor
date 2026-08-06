@@ -10,6 +10,7 @@ const els = {
   url: $("url"), token: $("token"), go: $("go"), end: $("end"), reset: $("reset"),
   language: $("language"),
   dot: $("dot"), statusText: $("statusText"), log: $("log"), notes: $("notes"),
+  coachTally: $("coachTally"),
 };
 
 // Endpoint resolution, in precedence order:
@@ -69,22 +70,38 @@ async function loadConfig() {
     // No config.json when serving frontend/ locally; fall back to the origin-derived
     // URL and a placeholder language so the control is never empty.
   }
-  setLanguages([{ id: "", label: "As deployed" }], "");
+  // An empty id makes the bridge use its deploy-time default, which is a real language —
+  // so say that plainly. A selector that silently means "whatever was deployed" is how a
+  // session ends up in a language nobody chose.
+  setLanguages([{ id: "", label: "Deployed default (no language list)" }], "");
 }
 loadConfig();
 
 els.language.addEventListener("change", () => {
   localStorage.setItem("tutor.language", els.language.value);
-  // A language is chosen when the Nova Sonic session opens, so switching mid-call
-  // means reconnecting. Do it seamlessly if we are already talking.
+  // Switching while IDLE used to keep the previous conversation, and the next Start
+  // replayed it as history — so the tutor carried on in the old language even though a
+  // new one was selected. History is per language, so drop it either way.
+  state.history = [];
+  state.historyLanguage = els.language.value;
+  // A language is chosen when the Nova Sonic session opens, so switching mid-call means
+  // reconnecting. Do it seamlessly if we are already talking.
   if (state.ws) restartForLanguage();
 });
 
 async function restartForLanguage() {
   setStatus("Switching language…");
-  // Drop the transcript: replaying an English conversation into a German tutor as
-  // "history" would just confuse it.
+  // Drop the transcript: replaying a conversation in one language into a tutor speaking
+  // another as "history" would just confuse it.
   state.history = [];
+  // Coach reviews still in flight belong to the old language; resolve their placeholders
+  // rather than leaving them spinning forever.
+  for (const [, entry] of state.pending) entry.node.remove();
+  state.pending.clear();
+  state.userBubbles.clear();
+  state.reviewed = 0;
+  state.noted = 0;
+  updateTally();
   stopAll();
   await start();
 }
@@ -109,8 +126,18 @@ const state = {
   userStopped: false, retries: 0,
   botSpec: "", botFinal: "", botBubble: null,
   pending: new Map(),      // transcript -> {node, count}
-  framesSent: 0, micWatchdog: null, deviceRate: null,
+  framesSent: 0, micWatchdog: null, deviceRate: null, warnedNotScored: false,
+  // Which language the accumulated history was spoken in. Replaying a conversation from
+  // another language makes the tutor continue in it, whatever the prompt says.
+  historyLanguage: null,
+  // Counts for the pane header. The pane is designed to stay empty, so without a tally
+  // there is no way to tell a silent coach from a dead one.
+  reviewed: 0, noted: 0,
   botTurnId: null, botTurnDone: false, userBubbles: new Map(),
+  // Incremented for every connection attempt. Events from a superseded socket are
+  // ignored: a socket that is closing still delivers queued audio and transcripts, and
+  // those belong to the previous language.
+  generation: 0,
 };
 
 function setStatus(text, kind) {
@@ -150,26 +177,11 @@ function addTurn(role, text, live, meta) {
   return bubble;
 }
 
-// The user bubble is written from Nova Sonic's transcript so it appears instantly, then
-// replaced if the coaching lane's independent ASR disagrees.
-function correctUserTranscript(m) {
-  const bubble = state.userBubbles.get(m.turnId);
-  if (!bubble || !m.text) return;
-  bubble.textContent = m.text;
-  bubble.title = `corrected by Transcribe (${m.language || "unknown"}); `
-               + `Nova Sonic heard: ${m.was}`;
-  if (DEBUG) {
-    const tag = document.createElement("div");
-    tag.className = "debug-tag";
-    tag.textContent = `corrected lang=${m.language} was="${m.was}"`;
-    bubble.appendChild(tag);
-  }
-  // Keep the resume history truthful too.
-  for (let i = state.history.length - 1; i >= 0; i--) {
-    if (state.history[i].role === "USER") { state.history[i].text = m.text; break; }
-  }
-}
-
+// The user bubble shows the conversation model's transcript, always. Replacing it with
+// the coaching lane's independent reading was tried and removed: it truncated speech,
+// showed literal readings of mispronunciations, and rendered accented target-language
+// speech in the learner's own language. What the independent ASR heard is still visible
+// in the coach diagnostics under ?debug=1.
 function onUserTranscript(text, turnId) {
   if (!text.trim()) return;
   // A new learner turn means the tutor's turn is over, whatever the server said.
@@ -264,6 +276,9 @@ function coachNote(turn, category, text) {
   node.append(chip, quote, body);
   if (entry) {
     entry.count += 1;
+    // Kept so coach_done can attach the diagnostics for this turn once they arrive: the
+    // note is rendered first, and the evidence behind it lands a moment later.
+    (entry.notes = entry.notes || []).push(node);
     els.notes.insertBefore(node, entry.node);
   } else {
     els.notes.appendChild(node);
@@ -271,27 +286,61 @@ function coachNote(turn, category, text) {
   els.notes.scrollTop = els.notes.scrollHeight;
 }
 
+function updateTally() {
+  if (!els.coachTally) return;
+  const { reviewed, noted } = state;
+  els.coachTally.textContent = reviewed
+    ? `${reviewed} reviewed · ${noted} flagged`
+    : "";
+}
+
 function coachDone(turn, count, diag) {
   const entry = state.pending.get(turn);
   if (!entry) return;
   state.pending.delete(turn);
-  if (count > 0) { entry.node.remove(); return; }
 
-  // "Nothing to fix" must only be said when pronunciation was actually reviewed.
-  // Claiming a clean bill of health while the phoneme scorer was unavailable is worse
-  // than saying nothing: the learner assumes their pronunciation passed.
-  const notScored = diag && diag.phonemeSkip;
-  entry.node.className = notScored ? "note" : "note clean";
-  entry.node.textContent = notScored
-    ? "Grammar looked fine for “" + turn + "”. Pronunciation was not scored for this "
-      + "turn, so it has not been checked."
-    : "✓ “" + turn + "” — nothing to fix.";
-  if (DEBUG && diag) {
-    const tag = document.createElement("div");
-    tag.className = "debug-tag";
-    tag.textContent = JSON.stringify(diag);
-    entry.node.appendChild(tag);
+  // A silent turn leaves NOTHING on screen — not a tick, not a "no notes" row, not even
+  // under ?debug=1. A pane that fills up after every sentence trains the reader to stop
+  // looking at it, which costs them the notes that matter. Diagnostics for a silent turn
+  // go to the console, where they are available without occupying the pane.
+  state.reviewed += 1;
+  state.noted += count;
+  updateTally();
+  if (count === 0 && DEBUG) console.debug("coach silent", turn, diag);
+  // Notes that DID appear keep their evidence, collapsed, under ?debug=1 — that is how a
+  // note gets checked against the phonemes it came from.
+  if (count > 0 && DEBUG && entry.notes) {
+    for (const node of entry.notes) attachDiagnostics(node, diag);
   }
+
+  const notScored = count === 0 && diag && diag.phonemeSkip;
+  // One exception, stated once per session: if pronunciation is not being scored at all,
+  // an empty pane would imply it passed. That is a coverage gap, not praise.
+  if (notScored && !state.warnedNotScored) {
+    state.warnedNotScored = true;
+    entry.node.className = "note";
+    entry.node.textContent = "Pronunciation is not being scored in this session, so only "
+      + "grammar is being checked.";
+    const why = document.createElement("div");
+    why.className = "withheld";
+    why.textContent = diag.phonemeSkip;
+    entry.node.appendChild(why);
+    return;
+  }
+  entry.node.remove();
+}
+
+// Collapsed, monospaced, and clearly not part of the note. Previously the raw JSON was
+// appended to the note text, which made it look like advice for the learner.
+function attachDiagnostics(node, diag) {
+  const box = document.createElement("details");
+  box.className = "diag";
+  const summary = document.createElement("summary");
+  summary.textContent = "diagnostics";
+  const body = document.createElement("pre");
+  body.textContent = JSON.stringify(diag, null, 2);
+  box.append(summary, body);
+  node.appendChild(box);
 }
 
 // --- playback ---------------------------------------------------------------
@@ -439,25 +488,33 @@ function wsUrl() {
 }
 
 function connect(resume) {
+  detach(state.ws);                        // never leave a previous socket running
+  const generation = ++state.generation;
+  const current = () => generation === state.generation;
   const ws = new WebSocket(wsUrl());
   state.ws = ws;
   setStatus(resume ? "Reconnecting…" : "Connecting…");
 
   ws.onopen = () => {
+    if (!current()) { detach(ws); return; }
     // Distinguish "socket is up" from "the tutor's stream is up". If this status stays
     // put, the bridge accepted the connection but Nova Sonic never opened — a server
     // side problem (model access, IAM, region), not a microphone one.
     setStatus("Connected — waiting for the tutor…");
     // Replaying history is what makes a conversation survive Nova Sonic's 8 minute
     // per-connection cap: the new stream starts with the old context.
-    ws.send(JSON.stringify({
-      type: "start",
-      language: els.language.value,
-      history: state.history.slice(-20),
-    }));
+    // Belt and braces: history is only ever replayed into the language it came from.
+    // The 8-minute reconnect depends on this, and so does language switching.
+    const language = els.language.value;
+    const replay = state.historyLanguage === language ? state.history.slice(-20) : [];
+    if (!replay.length) state.history = [];
+    state.historyLanguage = language;
+    ws.send(JSON.stringify({ type: "start", language, history: replay }));
   };
 
   ws.onmessage = (ev) => {
+    // A superseded socket keeps delivering the previous session's audio and text.
+    if (!current()) return;
     let m;
     try { m = JSON.parse(ev.data); } catch (_) { return; }
     switch (m.type) {
@@ -465,7 +522,13 @@ function connect(resume) {
         state.retries = 0;
         const rate = state.deviceRate && state.deviceRate !== IN_RATE
           ? ` (mic ${state.deviceRate}Hz -> ${IN_RATE}Hz)` : "";
-        setStatus("Listening — just talk" + rate, "live");
+        // The bridge falls back to its deployed default for a language it does not
+        // carry. Say so, rather than letting it look like the selector was ignored.
+        const wanted = els.language.value;
+        const mismatch = wanted && m.language && m.language !== wanted
+          ? ` — this build serves ${m.language}, not ${wanted}` : "";
+        if (mismatch) console.warn("language fallback", m);
+        setStatus("Listening — just talk" + rate + mismatch, mismatch ? "err" : "live");
         break;
       }
       case "transcript":
@@ -483,12 +546,6 @@ function connect(resume) {
         markBotTurnDone(state.botTurnId);
         break;
       case "turn_end": markBotTurnDone(m.turnId); break;
-      case "transcript_correction":
-        // The independent ASR read the audio differently. Show what it heard: leaving
-        // words on screen the learner never said is worse than a late correction.
-        console.debug("transcript_correction", m);
-        correctUserTranscript(m);
-        break;
       case "coaching": coachPending(m.turn); break;
       case "feedback": coachNote(m.turn, m.category, m.text); break;
       case "coach_done":
@@ -499,9 +556,10 @@ function connect(resume) {
     }
   };
 
-  ws.onerror = () => setStatus("Connection error", "err");
+  ws.onerror = () => { if (current()) setStatus("Connection error", "err"); };
 
   ws.onclose = () => {
+    if (!current()) return;              // superseded; a newer socket owns the UI
     state.ws = null;
     if (state.userStopped) { setStatus("Idle"); return; }
     // Nova Sonic caps a connection at 8 minutes; a close mid-conversation is
@@ -534,12 +592,27 @@ async function start() {
   }
 }
 
+// Silence a socket and close it whatever state it is in. Closing only when OPEN left a
+// CONNECTING socket alive, which then opened as a second, parallel session — two tutors
+// talking at once, one of them in the language you just switched away from.
+function detach(ws) {
+  if (!ws) return;
+  ws.onopen = ws.onmessage = ws.onerror = ws.onclose = null;
+  try {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "stop" }));
+    }
+    if (ws.readyState !== WebSocket.CLOSED) ws.close();
+  } catch (_) {
+    // A socket that never opened throws on close; nothing to do about it.
+  }
+}
+
 function stopAll() {
   state.userStopped = true;
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({ type: "stop" }));
-    state.ws.close();
-  }
+  state.generation += 1;          // anything still in flight is now stale
+  detach(state.ws);
+  state.ws = null;
   stopAudio();
   closeBotTurn();
   els.go.disabled = false;

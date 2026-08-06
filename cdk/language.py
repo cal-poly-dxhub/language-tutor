@@ -29,6 +29,7 @@ REQUIRED_FIELDS = (
     "voiceGender",
     "locale",
     "nativeLocale",
+    "espeakLanguage",
     "clarifyPhrase",
     "regionalVariation",
     "learnerErrors",

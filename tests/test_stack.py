@@ -192,3 +192,29 @@ def test_language_context_switches_voice_and_prompts():
     assert "Spanish" in es["SYSTEM_PROMPT"] and "French" in fr["SYSTEM_PROMPT"]
     for env in (es, fr):
         assert "{{" not in env["SYSTEM_PROMPT"] + env["COACH_PROMPT"]
+
+
+# --- the container build ------------------------------------------------------
+# Deleting a module and leaving it in the Dockerfile's COPY fails at `cdk deploy`, minutes
+# in, with a checksum error that names the missing file but not the cause. Cheap to pin.
+
+def test_dockerfiles_only_copy_files_that_exist():
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    checked = 0
+    for dockerfile in root.glob("*/Dockerfile"):
+        context = dockerfile.parent
+        for line in dockerfile.read_text().splitlines():
+            if not line.upper().startswith("COPY"):
+                continue
+            parts = re.split(r"\s+", line.strip())[1:]
+            sources = [p for p in parts[:-1] if not p.startswith("--")]
+            for src in sources:
+                if any(ch in src for ch in "*?["):
+                    assert list(context.glob(src)), f"{dockerfile}: {src} matches nothing"
+                else:
+                    assert (context / src).exists(), f"{dockerfile}: {src} does not exist"
+                checked += 1
+    assert checked, "no COPY sources were checked"

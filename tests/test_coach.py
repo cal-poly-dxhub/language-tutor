@@ -9,9 +9,11 @@ pronunciation claim is never made without phoneme evidence.
 
 import array
 import asyncio
+import io
 import json
 import math
 import os
+import pathlib
 import sys
 import wave
 
@@ -187,9 +189,12 @@ class FakeSageMaker:
         self.payload = {"expected_phonemes": expected, "actual_phonemes": actual,
                         "score": {"accuracy": accuracy}}
         self.calls = 0
+        self.texts = []          # the transcripts phonemisation was requested for
 
     def invoke_endpoint(self, **kwargs):
         self.calls += 1
+        body = json.loads(kwargs.get("Body") or "{}")
+        self.texts.append(body.get("text", ""))
         return {"Body": FakeBody(self.payload)}
 
 
@@ -379,8 +384,9 @@ def test_pronunciation_dropped_when_accuracy_implies_a_wrong_transcript():
     sm = FakeSageMaker(["k", "w", "e", "n", "t", "a"], ["t", "e", "l", "m", "i"], 11.1)
     br = FakeBedrock('{"pronunciation": "say cuéntame slowly", "grammar": null}')
     c = C.Coach(sagemaker_endpoint="ep", sagemaker_client=sm, bedrock_client=br)
+    # The pronunciation claim goes; there is no grammar note in this fixture.
     assert review(c, "cuéntame sobre el silabo", tone(1500)) == []
-    assert any("transcript-unreliable" in d for d in c.diagnostics["dropped"])
+    assert any("no-reliable-sound-evidence" in d for d in c.diagnostics["dropped"])
 
 
 def test_pronunciation_kept_when_accuracy_is_merely_poor():
@@ -537,3 +543,155 @@ def test_fabricated_note_is_dropped_by_the_coach():
     assert review(c, "me gusta comer tortillas", tone(1500)) == []
     assert any("cited-word-not-said:discriminatorio" in d
                for d in c.diagnostics["dropped"])
+
+
+def test_a_note_is_validated_against_the_intended_words_not_the_literal_reading():
+    """
+    Regression. The turn was labelled with the literal ASR reading ("tortelas") while the
+    reviewer correctly wrote about "tortillas", so the fabricated-word guard rejected a
+    perfectly good note — and the notes pane quoted words the learner never meant.
+    """
+    sm = FakeSageMaker(["t", "o", "ɾ", "t", "i", "ʝ", "a", "s"],
+                       ["t", "o", "ɾ", "t", "i", "l", "a", "s"], 88.0)
+    br = FakeBedrock('{"pronunciation": "In \\u2018tortillas\\u2019 the ll should sound '
+                     'like a y", "grammar": null}')
+    c = C.Coach(sagemaker_endpoint="ep", sagemaker_client=sm, bedrock_client=br)
+    notes = review(c, "me gusta comer tortillas", tone(1500))
+    assert notes and notes[0][0] == "pronunciation"
+    assert c.diagnostics["dropped"] == []
+
+
+def test_the_guard_still_catches_a_genuine_fabrication():
+    sm = FakeSageMaker(["t", "i", "ʝ", "a"], ["t", "i", "l", "a"], 88.0)
+    br = FakeBedrock('{"pronunciation": "In \\u2018discriminatorio\\u2019 your ll became '
+                     'an l", "grammar": null}')
+    c = C.Coach(sagemaker_endpoint="ep", sagemaker_client=sm, bedrock_client=br)
+    assert review(c, "me gusta comer tortillas", tone(1500)) == []
+    assert any("cited-word-not-said" in d for d in c.diagnostics["dropped"])
+
+
+# --- an endpoint that ignores the requested language ---------------------------
+# The phoneme container was once hardcoded to a single voice. Such an endpoint answers a
+# request for any other language with the wrong reading of the words, and the resulting
+# score is not merely low, it is meaningless. Believing it silenced every language except
+# the one the endpoint was built for, GRAMMAR INCLUDED, because a low score suppresses the
+# whole turn.
+
+class LanguageIgnoringEndpoint:
+    """Mimics the pre-fix container: always phonemises with one fixed voice."""
+
+    def __init__(self, voice="es", report=True):
+        self.voice, self.report = voice, report
+
+    def invoke_endpoint(self, **kwargs):
+        body = {
+            "expected_phonemes": ["b", "o", "ŋ", "x", "o", "w", "ɾ"],
+            "actual_phonemes": ["b", "ɔ", "ʒ", "u", "ʁ"],
+            "score": {"accuracy": 14.3},
+        }
+        if self.report:
+            body["language"] = self.voice
+        return {"Body": io.BytesIO(json.dumps(body).encode())}
+
+
+def _french_coach(endpoint):
+    c = C.Coach(sagemaker_endpoint="ep", sagemaker_client=endpoint,
+                bedrock_client=FakeBedrock(
+                    '{"pronunciation": null, "grammar": "the article is missing"}'))
+    c.espeak_language = "fr-fr"
+    return c
+
+
+def test_a_mismatched_endpoint_language_discards_the_score():
+    c = _french_coach(LanguageIgnoringEndpoint())
+    notes = review(c, "bonjour comment allez vous", tone(1500))
+    # Grammar survives: the transcript is still trustworthy, only the sounds are unscored.
+    assert notes == [("grammar", "the article is missing")]
+    assert c.diagnostics["accuracy"] is None
+    assert "fr-fr" in c.diagnostics["phonemeSkip"]
+    assert not any("audio-does-not-support" in d for d in c.diagnostics["dropped"])
+
+
+def test_an_endpoint_that_reports_no_language_is_treated_as_stale():
+    c = _french_coach(LanguageIgnoringEndpoint(report=False))
+    assert review(c, "bonjour comment allez vous", tone(1500)) == [
+        ("grammar", "the article is missing")]
+    assert c.diagnostics["accuracy"] is None
+
+
+def test_a_matching_endpoint_language_is_trusted():
+    ep = LanguageIgnoringEndpoint(voice="fr-fr")
+    c = _french_coach(ep)
+    notes = review(c, "bonjour comment allez vous", tone(1500))
+    # The score is now real evidence and is recorded; grammar is unaffected by it.
+    assert c.diagnostics["accuracy"] == 14.3
+    assert notes == [("grammar", "the article is missing")]
+
+
+def test_the_payload_carries_the_conversation_transcript():
+    payload = C.build_coach_input("yo eres bien", [], [], None)
+    assert "yo eres bien" in payload
+    assert "HEARD" not in payload and "INTENDED" not in payload
+
+
+def test_a_grammar_note_survives_without_any_phoneme_evidence():
+    """
+    The case that went unflagged: a real agreement error in a short sentence. Nothing about
+    grammar depends on the audio, so no audio-derived condition may suppress it.
+    """
+    br = FakeBedrock('{"pronunciation": null, "grammar": "‘yo eres’ mixes persons — '
+                     'first person is ‘yo soy’"}')
+    c = C.Coach(sagemaker_endpoint="", sagemaker_client=None, bedrock_client=br)
+    notes = review(c, "yo eres bien", tone(1500))
+    assert notes and notes[0][0] == "grammar"
+    assert c.diagnostics["dropped"] == []
+
+
+# --- what survived removing the second recogniser ------------------------------
+# An independent Transcribe lane used to run on the same audio. It was removed once every
+# job it had was either withdrawn or shown to be harmful: its text made expected phonemes
+# equal actual (cancelling the error it was meant to reveal), it manufactured grammar
+# errors from its own mishearings, and replacing the on-screen transcript with it showed
+# learners words they never said. These tests keep the properties that mattered.
+
+def test_expected_phonemes_come_from_the_conversation_transcript():
+    sm = FakeSageMaker(list("toɾtiʝas"), list("toɾtilas"), 88.0)
+    br = FakeBedrock('{"pronunciation": "In \\u2018tortillas\\u2019 the ll should sound '
+                     'like a y", "grammar": null}')
+    c = C.Coach(sagemaker_endpoint="ep", sagemaker_client=sm, bedrock_client=br)
+    notes = review(c, "me gusta comer tortillas", tone(1500))
+    assert sm.texts == ["me gusta comer tortillas"]
+    assert notes == [("pronunciation",
+                      "In ‘tortillas’ the ll should sound like a y")]
+
+
+def test_accented_target_language_is_still_graded():
+    """
+    The population this tool serves speaks with an accent. No code path may discard a turn
+    for sounding non-native; the reviewer decides, and it is told which accent features to
+    ignore.
+    """
+    sm = FakeSageMaker(list("meɣusta"), list("miɡasta"), 58.3)
+    br = FakeBedrock('{"pronunciation": "your vowels drifted", "grammar": null}')
+    c = C.Coach(sagemaker_endpoint="ep", sagemaker_client=sm, bedrock_client=br)
+    assert review(c, "me gusta", tone(1500)) == [("pronunciation",
+                                                  "your vowels drifted")]
+
+
+def test_the_coach_takes_no_asr_argument_any_more():
+    import inspect
+    params = list(inspect.signature(C.Coach.analyze).parameters)
+    assert params == ["self", "transcript", "pcm"], params
+
+
+def test_no_second_recogniser_remains_in_the_coach():
+    """
+    The Transcribe lane is gone: no import, no client, no parameter. Prose explaining why
+    it was removed is allowed to mention it — code is not.
+    """
+    src = (pathlib.Path(__file__).resolve().parents[1] / "bridge" / "coach.py").read_text()
+    code = "\n".join(line for line in src.splitlines()
+                     if not line.lstrip().startswith("#"))
+    for token in ("import asr", "asr_client", "Transcription", "start_stream_transcription",
+                  "asr=", "asr.text", "asr.ok"):
+        assert token not in code, token

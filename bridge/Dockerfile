@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY asr.py coach.py server.py ./
+COPY coach.py server.py ./
 
 # Run as a non-root user; the bridge needs no write access to the image.
 RUN useradd --create-home --uid 10001 bridge

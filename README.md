@@ -7,7 +7,7 @@ Two lanes, deliberately decoupled:
 
 | | Fast lane — conversation | Slow lane — coaching |
 |---|---|---|
-| Model | Amazon Nova 2 Sonic (speech-to-speech) | Transcribe (words) + Wav2Vec2 (phonemes) + Claude Haiku (judgement) |
+| Model | Amazon Nova 2 Sonic (speech-to-speech) | Wav2Vec2 (phonemes) + Claude Haiku (judgement) |
 | Latency | ~1s, streamed | 1–3s after you finish a sentence |
 | Output | the tutor's voice | on-screen notes |
 | Blocking? | never waits on the coach | never delays the conversation |
@@ -27,7 +27,6 @@ browser / CLI ──WebSocket──► Fargate bridge ──bidirectional stream
                                 │                            └─ Bedrock KB (course docs)
                                 │
                     audio tee ──┴──► async coach  (per finished utterance, bounded)
-                                        ├─ Transcribe sidecar → words + language spoken
                                         ├─ SageMaker Wav2Vec2 → expected vs actual phonemes
                                         └─ Claude Haiku → {"pronunciation":…, "grammar":…}
                                               └─► pushed to the client as coach notes
@@ -93,27 +92,37 @@ exist because of that:
   client to check model access and the task role. `{"type":"ping"}` returns a `debug`
   message with audio frames sent, event types received, model, region and last error.
 
-### Why the coach has its own ASR
+### One transcript, and why
 
-Nova Sonic's transcript is conditioned on the conversation. Once the tutor has spoken
-Spanish, English speech comes back rendered as Spanish words — "hello how are you"
-becomes "hola qué tal". That is harmless for the conversation, since the model understood
-the intent, and fatal for coaching: Wav2Vec2 scores the learner's sounds against the
-phonemisation of the transcript, so a translated transcript produces expected phonemes
-for words nobody said. The result is a confident pronunciation note about a sentence the
-learner never uttered.
+The coach grades Nova Sonic's transcript. An independent Amazon Transcribe pass over the
+same teed audio was built, run, and then removed — every job it was given turned out to be
+either unnecessary or harmful, and it cost a second container in the task, a wildcard IAM
+grant, and per-turn latency.
 
-So the slow lane runs **Amazon Transcribe** on the same teed audio. It hears only the
-audio, so it has no reason to translate, and `identify_language` reports which language
-was actually spoken — turning "was this the target language?" from a guess into evidence.
-Its transcript is what the phoneme scorer and Haiku see, and it also corrects the
-learner's on-screen transcript when the two ASRs disagree.
+The reasoning that put it there was that Sonic's transcript is conditioned on the
+conversation, so speech in the learner's own language can come back rendered in the target
+language. That is real. But the fix has to preserve one property: **expected phonemes must
+describe what the learner was trying to say.** Sonic's transcript does, because it infers
+intent. Transcribe writes what it literally heard — a learner aiming at "tortillas" and
+missing gets "tortelas" — and phonemising *that* makes expected equal actual, so the
+mispronunciation cancels out and no note is possible. It also manufactured grammar errors
+out of its own mishearings, reporting a wrong pronoun where the learner had used the right
+one.
 
-Transcribe runs in a **sidecar container** in the same Fargate task, reached over
-localhost. This is not a preference: `amazon-transcribe` pins `awscrt~=0.26.1` while the
-Nova Sonic SDK's `smithy-http[awscrt]` needs `~=0.28.2`, and no released version pair
-resolves. The sidecar is `essential=false`, so losing ASR degrades coaching and never
-touches the conversation.
+Its other two jobs failed too. Correcting the on-screen transcript replaced correct text
+with worse text in every observed case, including rendering correctly-spoken German as
+English. Gating the review on "do the two transcripts agree?" gave a mishearing the power
+to silence a turn.
+
+What remains is simpler and rests on the audio rather than on a second opinion:
+
+- a pronunciation note requires phoneme evidence, and requires that evidence to clear
+  `MIN_TRUSTWORTHY_ACCURACY` — a claim about which sound was wrong needs sound to back it;
+- grammar rests on the transcript alone, so no audio-derived condition suppresses it.
+  Making a low phoneme score silence the whole turn was tried and reverted: it removed
+  grammar coaching from precisely the learners whose audio aligns worst;
+- whether a turn was in the learner's own language, and therefore needs no note, is a
+  judgement the reviewer makes. It is told to return nothing for those turns.
 
 ### Why not a queue
 
@@ -210,7 +219,6 @@ the coach all share one region so there are no cross-region calls. Override with
 |---|---|
 | `-c language=<name>` | Teach a different language — picks `languages/<name>.json`. Default `spanish`. |
 | `-c phonemes=false` | Skip the Wav2Vec2 GPU endpoint. Coach reviews grammar only. |
-| `ASR_ENABLED=false` (env) | Skip the Transcribe sidecar; fall back to Nova Sonic's transcript. |
 | `-c certificateArn=<acm arn>` | TLS on the ALB, so the client can use `wss://` from an https page. |
 
 > **First build is slow.** The Wav2Vec2 image installs PyTorch and bakes in a ~1.2 GB
@@ -371,8 +379,8 @@ python3 -m pytest tests -q          # needs Python >= 3.12
 ```
 
 - `tests/test_coach.py` — silence trimming, JSON parsing, dedupe, the rule that
-  pronunciation is never claimed without phoneme evidence, and that no language
-  vocabulary has crept back into the code.
+  pronunciation is never claimed without phoneme evidence, that grammar survives a poor
+  phoneme score, and that no language vocabulary has crept back into the code.
 - `tests/test_turn_boundary.py` — `END_TURN` vs `PARTIAL_TURN` dispatch, audio-tee
   alignment and reset, barge-in, tool resolution, token auth, failure reporting.
 - `tests/test_language.py` — every profile renders every prompt with no placeholder
@@ -398,10 +406,6 @@ prompts/
 bridge/                      # Fargate container (Docker asset)
   server.py                  #   Nova Sonic bridge, audio tee, turn detection
   coach.py                   #   async pronunciation/grammar coach
-  asr.py                     #   client for the Transcribe sidecar
-  Dockerfile, requirements.txt
-asr_service/                 # Transcribe sidecar (Docker asset, same task)
-  app.py                     #   isolated because of an awscrt version conflict
   Dockerfile, requirements.txt
 container/                   # SageMaker Wav2Vec2 phoneme model (Docker asset)
 lambda/sync.py               # Canvas LMS sync

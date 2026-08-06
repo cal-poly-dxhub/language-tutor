@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import logging
+import os
 import threading
 import wave
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -32,9 +33,44 @@ processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-
 model = Wav2Vec2ForCTC.from_pretrained("facebook/wav2vec2-xlsr-53-espeak-cv-ft")
 model.eval()
 
-# Phonemizer
-espeak_backend = EspeakBackend("es", with_stress=False)
+# Phonemizer.
+#
+# The language MUST come from the request. This was hardcoded to Spanish, which meant that
+# in any other language the "expected" phonemes were the Spanish reading of foreign words
+# — "Hello" phonemised as "e ʎ o" while Wav2Vec2 correctly heard "h ɛ l oʊ". Accuracy then
+# collapsed to 17-34% on perfectly good English, and every note was discarded as
+# unreliable. Backends are cached because espeak initialisation is not free.
+DEFAULT_ESPEAK_LANGUAGE = os.environ.get("ESPEAK_LANGUAGE", "es")
 phoneme_separator = Separator(phone=" ", word=" | ")
+_backends = {}
+# Which voice each request actually got. A request can be satisfied by a fallback, and the
+# caller has to be able to tell: expected phonemes in the wrong language are not weaker
+# evidence, they are evidence for a different word.
+_resolved = {}
+
+
+def espeak_for(language: str) -> EspeakBackend:
+    language = (language or DEFAULT_ESPEAK_LANGUAGE).strip() or DEFAULT_ESPEAK_LANGUAGE
+    if language not in _backends:
+        try:
+            _backends[language] = EspeakBackend(language, with_stress=False)
+            _resolved[language] = language
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("no espeak voice %r (%s); falling back to %s",
+                           language, exc, DEFAULT_ESPEAK_LANGUAGE)
+            if language == DEFAULT_ESPEAK_LANGUAGE:
+                raise
+            _backends[language] = espeak_for(DEFAULT_ESPEAK_LANGUAGE)
+            _resolved[language] = _resolved.get(DEFAULT_ESPEAK_LANGUAGE,
+                                               DEFAULT_ESPEAK_LANGUAGE)
+    return _backends[language]
+
+
+def resolved_espeak_language(language: str) -> str:
+    """The voice a request was actually served by, after any fallback."""
+    language = (language or DEFAULT_ESPEAK_LANGUAGE).strip() or DEFAULT_ESPEAK_LANGUAGE
+    espeak_for(language)
+    return _resolved.get(language, DEFAULT_ESPEAK_LANGUAGE)
 
 TARGET_SR = 16000
 
@@ -63,12 +99,12 @@ def extract_phonemes(audio_bytes: bytes) -> list[str]:
     return [p for p in transcription.split() if p]
 
 
-def phonemize_text(text: str) -> list[str]:
-    result = espeak_backend.phonemize([text], separator=phoneme_separator)[0]
+def phonemize_text(text: str, language: str = "") -> list[str]:
+    result = espeak_for(language).phonemize([text], separator=phoneme_separator)[0]
     return [p for p in result.replace("|", "").split() if p]
 
 
-def phonemize_words(text: str) -> list[dict]:
+def phonemize_words(text: str, language: str = "") -> list[dict]:
     """
     Expected phonemes grouped by word, e.g. [{"word": "comer", "phonemes": ["k","o",...]}].
 
@@ -77,7 +113,7 @@ def phonemize_words(text: str) -> list[dict]:
     a learner about "the LL in discriminatorio", a word containing no LL. espeak already
     emits the boundary as "|"; this keeps it instead of stripping it.
     """
-    result = espeak_backend.phonemize([text], separator=phoneme_separator)[0]
+    result = espeak_for(language).phonemize([text], separator=phoneme_separator)[0]
     words = [w for w in text.split() if w]
     groups = [g.strip() for g in result.split("|")]
     groups = [g for g in groups if g]
@@ -115,8 +151,9 @@ class SageMakerHandler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(body)
                 audio_bytes = base64.b64decode(data["audio_b64"])
+                language = data.get("language", "")
                 actual = extract_phonemes(audio_bytes)
-                expected = phonemize_text(data["text"])
+                expected = phonemize_text(data["text"], language)
                 distance = levenshtein(expected, actual)
                 max_len = max(len(expected), len(actual), 1)
                 accuracy = max(0, (max_len - distance) / max_len) * 100
@@ -127,7 +164,8 @@ class SageMakerHandler(BaseHTTPRequestHandler):
                 result = json.dumps({
                     "actual_phonemes": actual,
                     "expected_phonemes": expected,
-                    "expected_words": phonemize_words(data["text"]),
+                    "expected_words": phonemize_words(data["text"], language),
+                    "language": resolved_espeak_language(language),
                     "score": {"accuracy": round(accuracy, 1), "distance": distance, "errors": errors},
                 })
                 self.send_response(200)

@@ -42,7 +42,7 @@ def make_session():
         session.to_client.append(obj)
 
     session._to_client = capture
-    session._dispatch_coach = lambda text, asr=None: session.dispatched.append(
+    session._dispatch_coach = lambda text: session.dispatched.append(
         (text, bytes(session._turn_pcm)))
     return session
 
@@ -188,7 +188,8 @@ def test_audio_tee_accompanies_the_transcript_and_resets():
     s = make_session()
     s._dispatch_coach = S.SonicSession._dispatch_coach.__get__(s)
     captured = []
-    s._coach_turn = lambda text, pcm, asr=None: captured.append((text, pcm)) or _noop()
+    s._coach_turn = (lambda text, pcm, turn_id=None:
+                     captured.append((text, pcm)) or _noop())
 
     pcm = b"\x11\x22" * 800
 

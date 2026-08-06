@@ -55,7 +55,7 @@ SERVER -> CLIENT (JSON)
     {"type": "coaching", "turn": "..."}                       # slow lane started
     {"type": "feedback", "category": "pronunciation"|"grammar",
      "text": "...", "turn": "..."}                            # slow lane result
-    {"type": "coach_done", "turn": "...", "notes": n}          # n may be 0
+    {"type": "coach_done", "turn": "...", "notes": n, "diag": {...}}   # n may be 0
     {"type": "interrupted"}                                   # barge-in: flush audio
     {"type": "turn_end"}
     {"type": "error", "message": "..."}
@@ -90,8 +90,7 @@ from aws_sdk_bedrock_runtime.models import (
 )
 from smithy_aws_core.identity import EnvironmentCredentialsResolver
 
-import asr as asr_client
-from coach import Coach, SAMPLE_RATE, worth_correcting
+from coach import Coach, SAMPLE_RATE
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("bridge")
@@ -118,13 +117,8 @@ MAX_HISTORY_TURNS = 20
 START_TIMEOUT = float(os.environ.get("START_TIMEOUT_SECONDS", "20"))
 # How much audio may be sent with zero events back before we call it broken.
 SILENCE_ALARM_SECONDS = float(os.environ.get("SILENCE_ALARM_SECONDS", "25"))
-# Independent ASR for the coaching lane. Nova Sonic's transcript is unusable as coaching
-# evidence once the session is language-primed (English speech comes back as target
-# language words), so Transcribe listens to the same audio with no conversational
-# context. Set ASR_ENABLED=false to fall back to Sonic's transcript.
-ASR_ENABLED = os.environ.get("ASR_ENABLED", "true").lower() != "false"
 # How many utterances may be under review at once. The slow lane is fire-and-forget, so
-# without a bound a stalled Transcribe or SageMaker would let tasks accumulate for as long
+# without a bound a stalled SageMaker call would let tasks accumulate for as long
 # as the learner keeps talking. Two is ample: reviewing takes 1-3s and turns are slower
 # than that. Beyond the bound the oldest waiting turn is dropped rather than queued
 # indefinitely — a note nobody sees for a minute is worth less than nothing.
@@ -301,7 +295,6 @@ class SonicSession:
         # Rebuilt in start() once the language is known, so the coach reviews against
         # the right language's rules.
         self.coach = Coach(system_prompt=COACH_PROMPT, region=REGION)
-        self.asr_options = []          # [target, native] locales for identification
         self._turn_pcm = bytearray()   # tee of learner audio for the current utterance
         self._turn_text = []           # ASR fragments accumulated across PARTIAL_TURNs
         self._coach_tasks = set()
@@ -338,13 +331,12 @@ class SonicSession:
         if self.started:
             return
         self.started = True
+        requested = language
         self.language, self.system_prompt, coach_prompt, self.voice_id = \
             resolve_language(language)
         bundle = LANGUAGE_BUNDLES.get(self.language) or {}
-        self.asr_options = [c for c in (bundle.get("locale"), bundle.get("nativeLocale"))
-                            if c]
         self.coach = Coach(system_prompt=coach_prompt, region=REGION,
-                           target_language_code=bundle.get("locale", ""))
+                           espeak_language=bundle.get("espeakLanguage", ""))
         logger.info("session language=%s voice=%s",
                     self.language or "(env default)", self.voice_id)
         _export_credentials()
@@ -393,7 +385,12 @@ class SonicSession:
         # (and swallows the error it was trying to report to the client).
         self._pump_task = asyncio.create_task(self._pump_responses())
         self._watchdog_task = asyncio.create_task(self._watch_for_silence())
-        await self._to_client({"type": "ready"})
+        # Report what was actually resolved. resolve_language falls back to the deployed
+        # default when a client asks for a language this build does not carry, and a
+        # silent fallback is indistinguishable from the UI ignoring the selector.
+        await self._to_client({"type": "ready", "language": self.language,
+                              "requested": (requested or "").strip().lower(),
+                              "voice": self.voice_id})
 
     async def _watch_for_silence(self) -> None:
         """
@@ -526,27 +523,10 @@ class SonicSession:
         else:
             await self._send_tool_result(tool_id, json.dumps({"error": f"unknown tool {name}"}))
 
-    # ---- independent ASR (coaching lane) ------------------------------------
-    async def _transcribe_turn(self, pcm: bytes):
-        """
-        Independent transcript for the coach, from the Transcribe sidecar.
-
-        Off the conversation's critical path entirely: this runs after the tutor has
-        already started answering, inside the slow lane.
-        """
-        if not ASR_ENABLED or len(self.asr_options) < 2 or not pcm:
-            return None
-        result = await asr_client.transcribe(pcm, self.asr_options)
-        logger.info("asr: lang=%s ok=%s text=%r err=%s", result.language, result.ok,
-                    result.text[:80], result.error)
-        return result
-
     # ---- slow lane ----------------------------------------------------------
     def _dispatch_coach(self, transcript: str) -> None:
         """
         Hand one COMPLETE learner utterance to the coach and return immediately.
-        `transcript` is Nova Sonic's; `asr` is the independent Transcribe result, which
-        the coach prefers as evidence when it succeeded.
         """
         # Everything the review needs is snapshotted here and passed by value: the
         # audio, the transcript, and the turn id it belongs to. Nothing the coach reads
@@ -571,20 +551,11 @@ class SonicSession:
 
     async def _review(self, transcript: str, pcm: bytes, turn_id: str) -> None:
         try:
-            asr = await self._transcribe_turn(pcm)
-            shown = asr.text if (asr is not None and asr.ok) else transcript
+            shown = transcript
             if not self.coach.should_analyze(shown, pcm):
                 return
             await self._to_client({"type": "coaching", "turn": shown})
-            # A correction to what the learner actually said, when the two ASRs disagree.
-            # Nova Sonic's transcript is displayed instantly; this replaces it with the
-            # independent reading rather than leaving words on screen they never spoke.
-            if asr is not None and asr.ok and worth_correcting(transcript, asr.display):
-                await self._to_client({
-                    "type": "transcript_correction", "turnId": turn_id,
-                    "text": asr.display, "language": asr.detected or asr.language,
-                    "was": transcript})
-            notes, diagnostics = await self.coach.analyze(shown, pcm, asr)
+            notes, diagnostics = await self.coach.analyze(shown, pcm)
             for category, text in notes:
                 await self._to_client({"type": "feedback", "category": category,
                                        "text": text, "turn": shown})

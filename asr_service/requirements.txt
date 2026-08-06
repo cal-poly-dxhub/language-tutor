@@ -1,4 +1,0 @@
-# Amazon Transcribe streaming, isolated here because its awscrt pin (~=0.26.1) conflicts
-# irreconcilably with the one the Nova Sonic SDK needs (~=0.28.2). See app.py.
-amazon-transcribe==0.6.4
-aiohttp==3.13.2

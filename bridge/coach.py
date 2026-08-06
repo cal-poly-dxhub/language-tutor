@@ -326,27 +326,6 @@ def build_coach_input(transcript: str, expected: List[str], actual: List[str],
     return "\n".join(lines)
 
 
-def worth_correcting(sonic_text: str, asr_text: str,
-                     min_ratio: float = 0.6) -> bool:
-    """
-    Should the on-screen transcript be replaced by the independent ASR's reading?
-
-    Only when the replacement is a plausible reading of the same utterance. Forcing the
-    target language onto speech in the learner's own language truncates it badly — "yo
-    what's good cuh" came back as "good" — and swapping that in is worse than leaving the
-    conversation model's version, which at least matched what the tutor replied to. A
-    replacement that drops most of the words is rejected.
-    """
-    sonic_words, asr_words = words(sonic_text), words(asr_text)
-    if not asr_words:
-        return False
-    if not sonic_words:
-        return True
-    if normalize_note(sonic_text) == normalize_note(asr_text):
-        return False                     # same thing, nothing to correct
-    return len(asr_words) >= min_ratio * len(sonic_words)
-
-
 class NoteDeduper:
     """Suppresses repeats so the learner isn't told the same thing every turn."""
 
@@ -371,7 +350,7 @@ class Coach:
 
     def __init__(self, sagemaker_endpoint: str = "", model_id: str = "",
                  system_prompt: str = "", region: str = "",
-                 target_language_code: str = "",
+                 espeak_language: str = "",
                  sagemaker_client=None, bedrock_client=None):
         self.sagemaker_endpoint = sagemaker_endpoint or os.environ.get("SAGEMAKER_ENDPOINT", "")
         self.model_id = model_id or os.environ.get(
@@ -379,10 +358,9 @@ class Coach:
         self.system_prompt = system_prompt or os.environ.get(
             "COACH_PROMPT", DEFAULT_COACH_PROMPT)
         self.region = region or os.environ.get("BEDROCK_REGION", "us-west-2")
-        # Locale of the language being taught, e.g. "es-US". Used to compare against the
-        # language Transcribe identified.
-        self.target_language_code = target_language_code or os.environ.get(
-            "TARGET_LANGUAGE_CODE", "")
+        # espeak voice for phonemising the transcript. Must match the language being
+        # taught, or "expected" describes the wrong sounds entirely.
+        self.espeak_language = espeak_language or os.environ.get("ESPEAK_LANGUAGE", "")
         self._sagemaker = sagemaker_client
         self._bedrock = bedrock_client
         self.deduper = NoteDeduper()
@@ -441,8 +419,28 @@ class Coach:
                 Body=json.dumps({
                     "audio_b64": base64.b64encode(pcm_to_wav(speech)).decode(),
                     "text": transcript,
+                    "language": self.espeak_language,
                 }))
             result = json.loads(resp["Body"].read())
+
+            # VERIFY THE ENDPOINT HONOURED THE LANGUAGE. An endpoint built before
+            # per-language phonemisation reads every language with one fixed voice, and a
+            # request for a different one is answered with confident nonsense: a greeting
+            # read with the wrong voice measured 14% against a correct recording of it.
+            # Those phonemes are not weak evidence, they describe a different word — and
+            # believing that score suppresses the whole turn, so the learner gets silence
+            # in every language except the one the endpoint was built for. Discarding them
+            # instead leaves grammar coaching working while the endpoint is stale.
+            served = (result.get("language") or "").strip()
+            wanted = (self.espeak_language or "").strip()
+            if wanted and served != wanted:
+                self.phoneme_skip = (
+                    f"endpoint phonemised in {served or 'an unreported language'}, not "
+                    f"{wanted} — redeploy the phoneme container to score this language")
+                logger.warning("phoneme endpoint served %r for a %r request; "
+                               "discarding the score", served or None, wanted)
+                return [], [], None, []
+
             score = result.get("score") or {}
             return (result.get("expected_phonemes") or [],
                     result.get("actual_phonemes") or [],
@@ -476,14 +474,17 @@ class Coach:
             logger.warning("coach evaluation failed: %s", exc)
             return {}
 
-    def _analyze_blocking(self, transcript: str, pcm: bytes,
-                          asr=None) -> List[Tuple[str, str]]:
-        # Prefer the independent ASR transcript as coaching evidence. Wav2Vec2 compares
-        # the learner's sounds against the phonemisation of this text, so a translated
-        # transcript would describe words nobody said.
+    def _analyze_blocking(self, transcript: str,
+                          pcm: bytes) -> List[Tuple[str, str]]:
+        # THE CONVERSATION TRANSCRIPT IS THE EVIDENCE.
+        #
+        # "Expected" phonemes must describe what the learner was TRYING to say, and the
+        # conversation model's transcript does that: it infers the words they were reaching
+        # for, so a mispronunciation shows up as a difference between expected and actual.
+        # A second recogniser reading the audio literally was tried here and removed — it
+        # wrote what it heard, so phonemising it made expected equal actual and the error
+        # cancelled out, and it manufactured grammar errors out of its own mishearings.
         evidence = transcript
-        if asr is not None and asr.ok:
-            evidence = asr.text
         trimmed = trim_silence(pcm) if pcm else b""
         expected, actual, accuracy, expected_words = self._phonemes(evidence, pcm)
         differences = align_phonemes(expected, actual)
@@ -505,26 +506,37 @@ class Coach:
             "phonemeSkip": getattr(self, "phoneme_skip", None),
             "differences": describe_differences(differences).splitlines(),
             "wordAligned": bool(expected_words),
-            "asrText": asr.text if asr is not None else None,
-            "asrLanguage": asr.language if asr is not None else None,
-            "asrError": asr.error if asr is not None else None,
-            "usedAsr": bool(asr is not None and asr.ok),
             "dropped": [],
         }
         if diagnostics["phonemeSkip"]:
             logger.info("no phoneme evidence: %s", diagnostics["phonemeSkip"])
 
-        # NO LANGUAGE GATE, deliberately. Deciding the spoken language from ASR
+        # A LOW PHONEME SCORE SUPPRESSES PRONUNCIATION ONLY, never grammar.
+        #
+        # Accuracy is a measurement of SOUNDS, and it drops for two unrelated reasons: the
+        # transcript describes different words, or the alignment is simply poor — short
+        # utterances, a heavy accent, a clipped recording. Grammar does not depend on any
+        # of that. It depends on the transcript, which the conversation model gets right.
+        #
+        # Making a low score silence the whole turn was tried and reverted: it removed
+        # grammar coaching from exactly the learners whose audio aligns worst, and a real
+        # error in a short sentence went unflagged because the phonemes scored badly. The
+        # wrong-words case it was meant to catch does not need this: a transcript in
+        # another language reads as correct prose, so the reviewer returns nothing anyway,
+        # and it is told explicitly to ignore turns in the learner's own language.
+        #
+        # The suppression that remains is narrow and provable: a claim ABOUT SOUNDS needs
+        # sound evidence, so pronunciation is dropped below the floor. See the loop below.
+
+        # NO LANGUAGE GATE, deliberately. Deciding the spoken language from recogniser
         # confidence was tried and removed: a learner speaking the target language WITH
         # AN ACCENT frequently scores higher under their own language, and that is the
         # entire population this tool serves. Measured on real learner speech, a turn
-        # that was transcribed correctly in the target language was labelled as the
-        # native one, and the gate discarded a turn that had a real grammar note waiting.
+        # transcribed correctly in the target language was labelled as the native one, and
+        # the gate discarded a turn that had a real grammar note waiting.
         #
         # Judging the language from the TEXT is the reviewer's job and it does it well:
         # the prompt tells it to return nothing for a turn in the learner's own language.
-        # A wrong-language turn also scores low on phonemes, which the floor below already
-        # suppresses. Nothing is lost by trusting the text.
         out = []
         for category in ("pronunciation", "grammar"):
             text = raw_notes.get(category)
@@ -535,11 +547,15 @@ class Coach:
             if category == "pronunciation" and not actual:
                 diagnostics["dropped"].append(f"{category}:no-phoneme-evidence")
                 continue
+            # And the evidence has to be worth something. Below the floor the alignment
+            # says the sounds do not correspond to these words at all, so a claim about
+            # WHICH sound was wrong is not supported. Grammar is untouched by this: it
+            # rests on the transcript, not on the audio.
             if (category == "pronunciation" and accuracy is not None
                     and accuracy < MIN_TRUSTWORTHY_ACCURACY):
                 diagnostics["dropped"].append(
                     f"{category}:accuracy-{accuracy:.0f}%-below-"
-                    f"{MIN_TRUSTWORTHY_ACCURACY:.0f}%-transcript-unreliable")
+                    f"{MIN_TRUSTWORTHY_ACCURACY:.0f}%-no-reliable-sound-evidence")
                 continue
             # A note that quotes a word the learner never said is worse than no note:
             # it is confidently wrong and it destroys trust in every other note.
@@ -557,23 +573,20 @@ class Coach:
         return out, diagnostics
 
     # ---- async entry point --------------------------------------------------
-    async def analyze(self, transcript: str, pcm: bytes, asr=None):
+    async def analyze(self, transcript: str, pcm: bytes):
         """
         Returns (notes, diagnostics). `notes` is [(category, note), ...] and is usually
         empty. Both belong to THIS call: nothing is stored on the Coach, so concurrent
         utterances cannot overwrite each other's results. Never raises — a failure to
         coach must not disturb the conversation.
 
-        `asr` is an optional independent Transcription (see bridge/asr.py). When present
-        it supplies both the transcript used as evidence and the language actually
-        spoken.
         """
         if not self.should_analyze(transcript, pcm):
             return [], {"skipped": "no words in the transcript"}
         loop = asyncio.get_event_loop()
         try:
             return await loop.run_in_executor(
-                None, self._analyze_blocking, transcript, pcm, asr)
+                None, self._analyze_blocking, transcript, pcm)
         except Exception as exc:  # noqa: BLE001
             logger.warning("coach failed: %s", exc)
             return [], {"error": str(exc)}

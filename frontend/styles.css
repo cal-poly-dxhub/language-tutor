@@ -77,8 +77,11 @@
   }
   .chip.pronunciation { background: color-mix(in srgb, var(--pron) 22%, transparent); color: var(--pron); }
   .chip.grammar { background: color-mix(in srgb, var(--gram) 22%, transparent); color: var(--gram); }
+  /* Liveness for a pane that is meant to stay empty. Without it, "reviewed and found
+     nothing" and "the coach is broken" look identical. */
+  .tally { float: right; font-weight: 400; color: var(--muted); font-size: 12px; }
+
   .note.pending { color: var(--muted); font-style: italic; }
-  .note.clean { color: var(--good); border-color: color-mix(in srgb, var(--good) 35%, var(--line)); }
   .empty { color: var(--muted); font-size: 13px; }
   .hint { padding: 0 18px 14px; color: var(--muted); font-size: 12px; }
   .sr-only {
@@ -90,4 +93,18 @@
 .debug-tag {
   margin-top: 5px; font-size: 10px; letter-spacing: .03em; opacity: .75;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Withheld-note explanation and ?debug=1 diagnostics. Deliberately unlike a coach note:
+   neither is advice about the learner's speech. */
+.withheld {
+  margin-top: 6px; font-size: 11px; color: var(--warn);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+details.diag { margin-top: 6px; font-size: 11px; }
+details.diag summary { cursor: pointer; color: var(--muted); }
+details.diag pre {
+  margin: 6px 0 0; padding: 8px; overflow-x: auto; white-space: pre-wrap;
+  word-break: break-word; background: var(--bg); border: 1px solid var(--line);
+  border-radius: 6px; font-size: 10px; line-height: 1.4;
 }

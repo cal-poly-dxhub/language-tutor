@@ -101,8 +101,7 @@ class LanguageTutorStack(Stack):
             bundles[name] = {
                 "label": other["targetLanguage"],
                 "voice": other["voiceId"],
-                "locale": other["locale"],
-                "nativeLocale": other["nativeLocale"],
+                "espeakLanguage": other["espeakLanguage"],
                 "system": render_prompt("conversation.txt", other),
                 "coach": render_prompt("coach.txt", other),
             }
@@ -241,8 +240,6 @@ class LanguageTutorStack(Stack):
                     # Learners pause mid-sentence to think. LOW makes Sonic wait, so
                     # the coach receives whole utterances instead of fragments.
                     "ENDPOINTING_SENSITIVITY": "LOW",
-                    # The sidecar shares the task's network namespace.
-                    "ASR_URL": "http://127.0.0.1:8081/transcribe",
                 },
                 secrets={
                     "ACCESS_TOKEN": ecs.Secret.from_secrets_manager(access_token),
@@ -250,22 +247,6 @@ class LanguageTutorStack(Stack):
             ),
             **service_kwargs,
         )
-
-        # --- ASR sidecar in the same task ---
-        # Transcribe cannot share the bridge's Python environment: amazon-transcribe pins
-        # awscrt ~=0.26.1, the Nova Sonic SDK needs ~=0.28.2, and no released pair
-        # resolves. So it runs as a second container beside the bridge and is reached over
-        # localhost — no service discovery, no network hop, no cold start.
-        asr_image = ecr_assets.DockerImageAsset(self, "AsrImage",
-            directory=os.path.join(ROOT, "asr_service"),
-            platform=ecr_assets.Platform.LINUX_AMD64)
-
-        service.task_definition.add_container("asr",
-            image=ecs.ContainerImage.from_docker_image_asset(asr_image),
-            essential=False,          # losing ASR degrades coaching, not the conversation
-            environment={"PORT": "8081"},
-            logging=ecs.LogDrivers.aws_logs(stream_prefix="asr"),
-        ).add_port_mappings(ecs.PortMapping(container_port=8081))
 
         service.target_group.configure_health_check(
             path="/health", healthy_http_codes="200",
@@ -293,11 +274,6 @@ class LanguageTutorStack(Stack):
                 "arn:aws:bedrock:*::foundation-model/anthropic.*",
                 f"arn:aws:bedrock:*:{self.account}:inference-profile/us.anthropic.*",
             ]))
-        # Independent ASR for the coaching lane. Transcribe has no resource-level
-        # permissions for streaming, hence the wildcard.
-        task_role.add_to_principal_policy(iam.PolicyStatement(
-            actions=["transcribe:StartStreamTranscription"],
-            resources=["*"]))
         task_role.add_to_principal_policy(iam.PolicyStatement(
             actions=["bedrock:Retrieve"],
             resources=[f"arn:aws:bedrock:{self.region}:{self.account}:knowledge-base/*"]))
