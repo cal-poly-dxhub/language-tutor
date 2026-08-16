@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+#
+# `docker` shim that forwards to Finch.
+#
+# Belt and braces for `./deploy.sh`, which puts this directory first on PATH. CDK is told
+# to use Finch via CDK_DOCKER, but anything in the toolchain that shells out to a literal
+# `docker` — a bundling step, a plugin, an older CDK code path — would otherwise find the
+# real Docker CLI, whose daemon isn't running on this machine, and fail with:
+#
+#   failed to connect to the docker API at unix:///.../docker.sock
+#
+# Finch's CLI is Docker-compatible for the commands CDK uses (build, tag, push, login,
+# inspect, images, run), so forwarding wholesale is safe here.
+#
+# This is only ever on PATH for the duration of a deploy.sh invocation.
+
+exec finch "$@"

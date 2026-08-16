@@ -1,0 +1,5 @@
+# Server-side Amazon Transcribe streaming for the /converse endpoint. Bundled into the
+# converse Lambda at deploy time (see cdk/stack.py BundlingOptions). awscrt ships
+# manylinux wheels that are compatible with the Lambda Python 3.12 runtime when built in
+# the SAM build image.
+amazon-transcribe>=0.6.0

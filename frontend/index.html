@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<!--
+  Browser client for the Language Tutor.
+
+  Two independent modes, chosen with the toggle at the top:
+
+    Raw Sonic    Live speech-to-speech with Amazon Nova Sonic. You talk, it talks back,
+                 streamed, with barge-in. No pronunciation/grammar feedback — just
+                 conversation. Streams over a WebSocket (/ws) to a Fargate bridge.
+
+    Custom bot   Record one utterance at a time. It is transcribed, scored for
+                 pronunciation (Wav2Vec2) and grammar, answered by Claude (with course-
+                 material lookup), and spoken back by Polly. Feedback appears in the
+                 notes pane. Uses plain HTTP (/upload-url, /converse).
+
+    index.html          this file: structure only
+    styles.css          presentation
+    app.js              mode switching, WebSocket + HTTP protocols, capture, playback
+    capture-worklet.js  audio-thread mic capture (PCM16 @ 16kHz)
+
+  ./deploy.sh publishes this directory to S3 behind CloudFront, which also proxies /ws to
+  the Sonic bridge and /converse + /upload-url to the custom-bot API — so the page, the
+  socket and the API all share one origin and the client needs no endpoint configuration.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Language Tutor — Spanish practice</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <h1>Language&nbsp;Tutor</h1>
+
+  <div class="modes" role="tablist" aria-label="Tutor mode">
+    <button id="modeSonic" class="mode-btn" role="tab" aria-selected="true">Raw&nbsp;Sonic</button>
+    <button id="modeCustom" class="mode-btn" role="tab" aria-selected="false">Custom&nbsp;bot</button>
+  </div>
+
+  <!-- Sonic controls -->
+  <div class="controls" id="sonicControls">
+    <label for="token">Access token</label>
+    <input id="token" type="password" placeholder="from Secrets Manager" autocomplete="off">
+    <button id="go">Start talking</button>
+    <button id="end" class="secondary" disabled>End</button>
+    <details id="advanced">
+      <summary>Endpoint</summary>
+      <label for="url">Bridge WebSocket</label>
+      <input id="url" type="text" placeholder="wss://host/ws" autocomplete="off">
+      <button id="reset" class="secondary" type="button">Use this page's origin</button>
+    </details>
+  </div>
+
+  <!-- Custom-bot controls -->
+  <div class="controls" id="customControls" hidden>
+    <button id="record">Record</button>
+    <button id="clearChat" class="secondary" type="button">Clear</button>
+  </div>
+
+  <p id="status" role="status" aria-live="polite"><span class="dot" id="dot"></span><span id="statusText">Idle</span></p>
+</header>
+
+<main class="single">
+  <section aria-labelledby="convHead">
+    <div class="pane-head" id="convHead">Conversation</div>
+    <div class="scroll" id="log" aria-live="polite" aria-atomic="false">
+      <p class="empty" id="sonicHint">Pick <strong>Raw Sonic</strong> and press
+        <strong>Start talking</strong>, then just speak Spanish. The tutor replies out
+        loud, waits when you pause, and lets you talk over it.</p>
+    </div>
+    <p class="hint" id="hint">Headphones recommended — without them the mic hears the
+      tutor and may interrupt it.</p>
+  </section>
+
+  <section aria-labelledby="coachHead" id="notesPane" hidden>
+    <div class="pane-head" id="coachHead">Feedback</div>
+    <div class="scroll" id="notes" aria-live="polite" aria-atomic="false">
+      <p class="empty">Pronunciation and grammar notes for the <strong>Custom bot</strong>
+        appear here after each utterance. An empty pane means nothing needed fixing.</p>
+    </div>
+  </section>
+</main>
+
+<script src="app.js" defer></script>
+</body>
+</html>
