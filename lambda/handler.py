@@ -124,12 +124,31 @@ def invoke_llm(messages):
         })).get("body").read())
 
 
+def _normalize_history(history):
+    """Map the web client's turn log into Anthropic Messages format.
+
+    The frontend stores turns as {"role": "USER"|"ASSISTANT", "text": "..."}, but the
+    Bedrock Anthropic API requires lowercase roles ("user"/"assistant") and a "content"
+    field. Entries already in the correct shape (e.g. from the CLI client) pass through.
+    """
+    normalized = []
+    for turn in history:
+        role = str(turn.get("role", "")).lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = turn.get("content", turn.get("text", ""))
+        if not content:
+            continue
+        normalized.append({"role": role, "content": content})
+    return normalized
+
+
 def converse(expected_phonemes, actual_phonemes, text, history):
     if expected_phonemes or actual_phonemes:
         user_msg = f'[The learner said: "{text}"]\n[Expected phonemes: {expected_phonemes}]\n[Actual phonemes: {actual_phonemes}]'
     else:
         user_msg = f'[The learner said: "{text}"]'
-    messages = history + [{"role": "user", "content": user_msg}]
+    messages = _normalize_history(history) + [{"role": "user", "content": user_msg}]
 
     result = invoke_llm(messages)
 

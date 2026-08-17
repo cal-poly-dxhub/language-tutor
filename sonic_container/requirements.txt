@@ -1,8 +1,13 @@
 # Nova Sonic bidirectional streaming uses the experimental async SDK (documented at
-# https://docs.aws.amazon.com/nova/latest/userguide/speech-bidirection.html). Versions
-# match the aws-samples/amazon-nova-samples speech-to-speech console-python sample.
-aws_sdk_bedrock_runtime>=0.1.0,<0.2.0
-smithy-aws-core>=0.0.1
+# https://docs.aws.amazon.com/nova/latest/userguide/speech-bidirection.html). The whole
+# smithy stack is version-pinned: these packages are pre-1.0 and make breaking API
+# changes between 0.x releases (e.g. 0.1.x renamed the Config auth kwargs). Leaving the
+# smithy deps unbounded let pip pull a newer, incompatible release and broke client init
+# with "Config.__init__() got an unexpected keyword argument 'http_auth_scheme_resolver'".
+aws_sdk_bedrock_runtime==0.1.1
+smithy-core==0.1.1
+smithy-aws-core==0.1.1
+smithy-http==0.2.1
 rx>=3.2.0
 # AWS plumbing (task-role credential resolution)
 boto3>=1.34.0

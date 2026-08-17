@@ -73,9 +73,21 @@ class LanguageTutorStack(Stack):
         want_phonemes = str(self.node.try_get_context("phonemes")).lower() != "false"
 
         # ---- Course materials (S3 data source for the Knowledge Base) ----
+        # The custom-bot flow has the browser talk to S3 directly via presigned URLs:
+        # a PUT (record upload, with a non-simple Content-Type header -> CORS preflight)
+        # and a GET (reply audio). Those calls hit s3.amazonaws.com, a different origin
+        # than the CloudFront page, so the bucket needs CORS. Presigned signatures still
+        # gate access; CORS only tells the browser the cross-origin call is allowed.
         materials_bucket = s3.Bucket(self, "MaterialsBucket",
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
             enforce_ssl=True,
+            cors=[s3.CorsRule(
+                allowed_methods=[s3.HttpMethods.GET, s3.HttpMethods.PUT,
+                                 s3.HttpMethods.HEAD],
+                allowed_origins=["*"],
+                allowed_headers=["*"],
+                exposed_headers=["ETag"],
+                max_age=3000)],
             removal_policy=RemovalPolicy.DESTROY, auto_delete_objects=True)
 
         # ---- Canvas LMS sync (scheduled; no public write endpoint) ----
@@ -143,15 +155,22 @@ class LanguageTutorStack(Stack):
         with open(os.path.join(ROOT, "prompts", "system.txt")) as f:
             custom_prompt = f.read()
 
-        # The converse Lambda needs the amazon-transcribe SDK (server-side STT). Bundle
-        # it from lambda/requirements.txt in the Lambda build image so awscrt's native
-        # wheels match the runtime.
+        # The converse Lambda needs the amazon-transcribe SDK (server-side STT), which
+        # pulls in awscrt's native extension (_awscrt.abi3.so). That wheel is
+        # architecture-specific, so we must fetch the wheel that matches the Lambda
+        # runtime (x86_64) rather than whatever the build host happens to be. Building
+        # on an Apple Silicon (arm64) Mac would otherwise install arm64 wheels that fail
+        # to load on the x86_64 Lambda ("cannot open shared object file"). Pinning
+        # --platform/--python-version/--only-binary makes pip download the manylinux
+        # x86_64 wheels without executing them, so the build is host-arch independent.
         converse_code = _lambda.Code.from_asset(
             os.path.join(ROOT, "lambda"),
             bundling=BundlingOptions(
                 image=_lambda.Runtime.PYTHON_3_12.bundling_image,
                 command=["bash", "-c",
-                         "pip install -r requirements.txt -t /asset-output && "
+                         "pip install -r requirements.txt -t /asset-output "
+                         "--platform manylinux2014_x86_64 --implementation cp "
+                         "--python-version 3.12 --only-binary=:all: && "
                          "cp -au . /asset-output"],
             ))
 
@@ -198,6 +217,7 @@ class LanguageTutorStack(Stack):
             handler="handler.lambda_handler",
             code=converse_code,
             role=converse_role,
+            architecture=_lambda.Architecture.X86_64,  # must match the awscrt wheels bundled above
             timeout=Duration.seconds(60),
             memory_size=1024,
             environment=converse_env)

@@ -1,5 +1,6 @@
 # Server-side Amazon Transcribe streaming for the /converse endpoint. Bundled into the
-# converse Lambda at deploy time (see cdk/stack.py BundlingOptions). awscrt ships
-# manylinux wheels that are compatible with the Lambda Python 3.12 runtime when built in
-# the SAM build image.
+# converse Lambda at deploy time (see cdk/stack.py BundlingOptions). Pulls in awscrt,
+# whose native extension is architecture-specific: the bundling step pins
+# --platform manylinux2014_x86_64 so the x86_64 Lambda gets a matching wheel regardless
+# of the build host's architecture (e.g. an arm64 Apple Silicon Mac).
 amazon-transcribe>=0.6.0

@@ -98,12 +98,16 @@ class NovaSonicSession:
                 os.environ["AWS_SESSION_TOKEN"] = frozen.token
         os.environ.setdefault("AWS_DEFAULT_REGION", REGION)
 
+        # aws_sdk_bedrock_runtime 0.1.x renamed these Config kwargs from the 0.0.x names
+        # still shown in the AWS docs example: http_auth_scheme_resolver -> auth_scheme_
+        # resolver and http_auth_schemes -> auth_schemes. requirements.txt pins the
+        # matching 0.1.x smithy stack so this signature stays valid.
         config = Config(
             endpoint_uri=f"https://bedrock-runtime.{REGION}.amazonaws.com",
             region=REGION,
             aws_credentials_identity_resolver=EnvironmentCredentialsResolver(),
-            http_auth_scheme_resolver=HTTPAuthSchemeResolver(),
-            http_auth_schemes={"aws.auth#sigv4": SigV4AuthScheme(service="bedrock")},
+            auth_scheme_resolver=HTTPAuthSchemeResolver(),
+            auth_schemes={"aws.auth#sigv4": SigV4AuthScheme(service="bedrock")},
         )
         self.client = BedrockRuntimeClient(config=config)
 
